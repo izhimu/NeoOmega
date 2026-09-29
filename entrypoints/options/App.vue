@@ -220,26 +220,33 @@ const moveRule = (profile: SwitchProfile, index: number, delta: number) => {
 // Online Rule List Management
 const updatingRuleList = ref(false);
 
-const toggleRuleList = (profile: SwitchProfile) => {
+const toggleRuleList = async (profile: SwitchProfile) => {
   if (!profile.ruleList) {
     profile.ruleList = {
       id: `rulelist_${Date.now()}`,
       url: 'https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt',
       format: 'autoproxy',
       matchProfileId: 'proxy',
-      defaultProfileId: profile.defaultProfileId,
+      defaultProfileId: profile.defaultProfileId || 'direct',
       updateIntervalMinutes: 1440,
       enabled: true,
     };
   } else {
     profile.ruleList.enabled = !profile.ruleList.enabled;
   }
+  await saveCurrentSettings();
 };
 
 const updateRuleListNow = async (profileId: string) => {
+  const profile = settings.value.profiles[profileId] as SwitchProfile | undefined;
+  if (!profile?.ruleList?.url?.trim()) {
+    toast.error(t('options.ruleListUrlRequired'));
+    return;
+  }
   updatingRuleList.value = true;
+  await saveCurrentSettings();
   chrome.runtime.sendMessage(
-    { type: 'UPDATE_RULE_LIST', profileId },
+    { type: 'UPDATE_RULE_LIST', profileId, ruleList: profile.ruleList },
     (res) => {
       updatingRuleList.value = false;
       if (res && res.success) {

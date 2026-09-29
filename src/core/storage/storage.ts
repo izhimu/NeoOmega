@@ -90,6 +90,15 @@ export const DEFAULT_PROFILES: Record<string, Profile> = {
         note: 'GitHub domains',
       },
     ],
+    ruleList: {
+      id: 'rulelist_default',
+      url: 'https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt',
+      format: 'autoproxy',
+      matchProfileId: 'proxy',
+      defaultProfileId: 'direct',
+      updateIntervalMinutes: 1440,
+      enabled: false,
+    },
   } as SwitchProfile,
 };
 

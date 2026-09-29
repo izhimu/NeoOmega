@@ -126,7 +126,7 @@ export const messages = {
       cachedRules: 'rules cached',
       ruleListUpdateSuccess: 'Rule list updated successfully',
       ruleListUpdateFailed: 'Failed to update rule list',
-
+      ruleListUrlRequired: 'Please provide a rule list URL first',
 
       // Settings & Backup
       settingsTitle: 'General Settings & Backup',
@@ -301,7 +301,7 @@ export const messages = {
       cachedRules: '条规则已缓存',
       ruleListUpdateSuccess: '在线规则列表更新成功',
       ruleListUpdateFailed: '在线规则列表更新失败',
-
+      ruleListUrlRequired: '请先填写规则列表 URL',
 
       // Settings & Backup
       settingsTitle: '通用设置与数据备份',

@@ -149,9 +149,15 @@ export async function fetchAndParseRuleList(
   matchProfileId: string,
   defaultProfileId: string = 'direct'
 ): Promise<{ text: string; rules: SwitchRule[] }> {
-  const res = await fetch(url);
+  let res: Response;
+  try {
+    res = await fetch(url);
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    throw new Error(`网络请求失败 (${errorMsg})。若无法直连此规则地址，请开启代理或更换镜像 URL。`);
+  }
   if (!res.ok) {
-    throw new Error(`Failed to fetch rule list: HTTP ${res.status} ${res.statusText}`);
+    throw new Error(`下载规则列表失败: HTTP ${res.status} ${res.statusText}`);
   }
   const text = await res.text();
   const rules = parseAutoProxyRules(text, matchProfileId, defaultProfileId);

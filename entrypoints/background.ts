@@ -38,19 +38,26 @@ export default defineBackground(() => {
     });
   }
 
-  const updateSingleRuleList = async (profileId: string) => {
+  const updateSingleRuleList = async (profileId: string, ruleListOverride?: any) => {
     const settings = await getSettings();
     const profile = settings.profiles[profileId];
-    if (!profile || profile.profileType !== 'SwitchProfile' || !profile.ruleList?.url) {
-      throw new Error('Profile does not have a configured rule list URL');
+    if (!profile || profile.profileType !== 'SwitchProfile') {
+      throw new Error('未找到指定的自动切换情景模式');
+    }
+    if (ruleListOverride) {
+      profile.ruleList = { ...profile.ruleList, ...ruleListOverride };
+    }
+    const ruleList = profile.ruleList;
+    if (!ruleList || !ruleList.url?.trim()) {
+      throw new Error('情景模式未配置在线规则列表 URL');
     }
     const { text, rules } = await fetchAndParseRuleList(
-      profile.ruleList.url,
-      profile.ruleList.matchProfileId,
-      profile.ruleList.defaultProfileId || profile.defaultProfileId
+      ruleList.url.trim(),
+      ruleList.matchProfileId || 'proxy',
+      ruleList.defaultProfileId || profile.defaultProfileId || 'direct'
     );
-    profile.ruleList.rulesCache = text.split(/\r?\n/);
-    profile.ruleList.lastUpdate = Date.now();
+    ruleList.rulesCache = text.split(/\r?\n/);
+    ruleList.lastUpdate = Date.now();
     await saveSettings(settings);
     if (settings.activeProfileId === profileId) {
       await ProxyManager.applyProfile(profile, settings.profiles);
@@ -226,7 +233,7 @@ export default defineBackground(() => {
     if (message.type === 'UPDATE_RULE_LIST') {
       (async () => {
         try {
-          const count = await updateSingleRuleList(message.profileId);
+          const count = await updateSingleRuleList(message.profileId, message.ruleList);
           sendResponse({ success: true, count });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
