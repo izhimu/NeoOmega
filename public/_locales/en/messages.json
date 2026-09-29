@@ -1,0 +1,10 @@
+{
+  "extName": {
+    "message": "NeoOmega - Modern Proxy Manager",
+    "description": "Extension name"
+  },
+  "extDesc": {
+    "message": "High-performance, lightweight proxy switcher and rule manager for Chrome (Manifest V3)",
+    "description": "Extension description"
+  }
+}

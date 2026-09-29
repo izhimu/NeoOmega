@@ -1,0 +1,14 @@
+body {
+  margin: 0;
+  padding: 0;
+  width: 340px;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+#app {
+  padding: 0;
+}

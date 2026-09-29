@@ -1,0 +1,145 @@
+@import "tailwindcss";
+@import "vue-sonner/style.css";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Radix & Modal Animations */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes dialogScaleIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -48%) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes dialogScaleOut {
+  from {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -48%) scale(0.96);
+  }
+}
+
+@keyframes popoverIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes popoverOut {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.97);
+  }
+}
+
+/* Modal Dialog Animations */
+.dialog-overlay[data-state="open"],
+[data-radix-dialog-overlay][data-state="open"] {
+  animation: fadeIn 180ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+.dialog-overlay[data-state="closed"],
+[data-radix-dialog-overlay][data-state="closed"] {
+  animation: fadeOut 120ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.dialog-content[data-state="open"],
+[data-radix-dialog-content][data-state="open"] {
+  animation: dialogScaleIn 200ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+.dialog-content[data-state="closed"],
+[data-radix-dialog-content][data-state="closed"] {
+  animation: dialogScaleOut 120ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Select Dropdown Animations */
+.select-content[data-state="open"],
+[data-radix-select-content][data-state="open"] {
+  animation: popoverIn 160ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+.select-content[data-state="closed"],
+[data-radix-select-content][data-state="closed"] {
+  animation: popoverOut 100ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Vue Transitions */
+/* Page / Tab transition */
+.page-enter-active,
+.page-leave-active {
+  transition: opacity 0.18s cubic-bezier(0.16, 1, 0.3, 1), transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.page-enter-from {
+  opacity: 0;
+  transform: translateY(6px);
+}
+.page-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
+/* Fade transition */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+/* List FLIP transition for rules & requests */
+.list-move,
+.list-enter-active,
+.list-leave-active {
+  transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.list-enter-from {
+  opacity: 0;
+  transform: translateY(6px);
+}
+.list-leave-to {
+  opacity: 0;
+  transform: scale(0.96);
+}
+
+/* Accordion expand/collapse */
+.expand-enter-active,
+.expand-leave-active {
+  transition: max-height 0.24s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  overflow: hidden;
+}
+.expand-enter-from,
+.expand-leave-to {
+  max-height: 0;
+  opacity: 0;
+}
+.expand-enter-to,
+.expand-leave-from {
+  max-height: 500px;
+  opacity: 1;
+}
