@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { decodeRuleListText, parseAutoProxyRules } from '../src/core/parsers/autoproxy';
+import { describe, expect, it, vi } from 'vitest';
+import { decodeRuleListText, parseAutoProxyRules, fetchAndParseRuleList } from '../src/core/parsers/autoproxy';
 import { matchCondition } from '../src/core/pac/matcher';
 
 describe('AutoProxy Parser', () => {
@@ -46,5 +46,19 @@ twitter.com
     expect(rules[4]?.condition.conditionType).toBe('HostWildcardCondition');
     expect(matchCondition(rules[4]!.condition, 'https://twitter.com/', 'twitter.com')).toBe(true);
     expect(matchCondition(rules[4]!.condition, 'https://mobile.twitter.com/', 'mobile.twitter.com')).toBe(true);
+  });
+
+  it('fetches and decodes base64 rule list', async () => {
+    const plain = '[AutoProxy 0.2.9]\n||google.com\n';
+    const base64 = Buffer.from(plain).toString('base64');
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => base64,
+    }) as any;
+
+    const result = await fetchAndParseRuleList('https://example.com/gfwlist.txt', 'proxy', 'direct');
+    expect(result.text).toBe(plain);
+    expect(result.rules.length).toBe(1);
+    expect(result.rules[0].profileId).toBe('proxy');
   });
 });

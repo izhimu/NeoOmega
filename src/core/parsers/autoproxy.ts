@@ -159,7 +159,8 @@ export async function fetchAndParseRuleList(
   if (!res.ok) {
     throw new Error(`下载规则列表失败: HTTP ${res.status} ${res.statusText}`);
   }
-  const text = await res.text();
+  const rawText = await res.text();
+  const text = decodeRuleListText(rawText);
   const rules = parseAutoProxyRules(text, matchProfileId, defaultProfileId);
   return { text, rules };
 }

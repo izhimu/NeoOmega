@@ -16,8 +16,12 @@ import {
   Sparkles,
   Menu,
   X,
+  Eye,
+  Copy,
+  Search,
 } from 'lucide-vue-next';
 import { Toaster, toast } from 'vue-sonner';
+import { decodeRuleListText } from '../../src/core/parsers/autoproxy';
 import { parseSwitchyOmegaBackup } from '../../src/core/parsers/switchyomega';
 import { ProxyManager } from '../../src/core/proxy/proxy-manager';
 import { DEFAULT_SETTINGS, getSettings, normalizeBypassList, saveSettings } from '../../src/core/storage/storage';
@@ -257,6 +261,39 @@ const updateRuleListNow = async (profileId: string) => {
       }
     }
   );
+};
+
+const showRuleListModal = ref(false);
+const ruleListSearchQuery = ref('');
+const ruleListDisplayLimit = ref(200);
+
+const currentRuleListLines = computed(() => {
+  if (!switchProfile.value?.ruleList?.rulesCache) return [];
+  const raw = switchProfile.value.ruleList.rulesCache.join('\n');
+  const decoded = decodeRuleListText(raw);
+  return decoded.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+});
+
+const filteredRuleListLines = computed(() => {
+  const query = ruleListSearchQuery.value.trim().toLowerCase();
+  if (!query) return currentRuleListLines.value;
+  return currentRuleListLines.value.filter(line => line.toLowerCase().includes(query));
+});
+
+const openRuleListModal = () => {
+  ruleListSearchQuery.value = '';
+  ruleListDisplayLimit.value = 200;
+  showRuleListModal.value = true;
+};
+
+const copyRuleList = async () => {
+  if (!currentRuleListLines.value.length) return;
+  await navigator.clipboard.writeText(currentRuleListLines.value.join('\n'));
+  toast.success(t('options.rulesCopied'));
+};
+
+const loadMoreRules = () => {
+  ruleListDisplayLimit.value += 200;
 };
 
 // Bypass Pattern Management
@@ -940,16 +977,28 @@ onUnmounted(() => {
                       </span>
                       <span v-else>{{ t('options.neverUpdated') }}</span>
                     </div>
-                    <UiButton
-                      variant="primary"
-                      size="sm"
-                      :loading="updatingRuleList"
-                      :disabled="!switchProfile.ruleList?.url"
-                      class="self-start sm:self-auto shrink-0"
-                      @click="updateRuleListNow(switchProfile.id)"
-                    >
-                      {{ updatingRuleList ? t('options.updating') : t('options.updateNow') }}
-                    </UiButton>
+                    <div class="flex items-center gap-2">
+                      <UiButton
+                        v-if="currentRuleListLines.length > 0"
+                        variant="outline"
+                        size="sm"
+                        class="self-start sm:self-auto shrink-0 flex items-center gap-1.5"
+                        @click="openRuleListModal"
+                      >
+                        <Eye :size="14" />
+                        {{ t('options.viewRules') }}
+                      </UiButton>
+                      <UiButton
+                        variant="primary"
+                        size="sm"
+                        :loading="updatingRuleList"
+                        :disabled="!switchProfile.ruleList?.url"
+                        class="self-start sm:self-auto shrink-0"
+                        @click="updateRuleListNow(switchProfile.id)"
+                      >
+                        {{ updatingRuleList ? t('options.updating') : t('options.updateNow') }}
+                      </UiButton>
+                    </div>
                   </div>
                 </div>
               </Transition>
@@ -1068,5 +1117,76 @@ onUnmounted(() => {
       variant="destructive"
       @confirm="confirmDeleteProfile"
     />
+
+    <!-- View Rule List Modal -->
+    <UiDialog
+      v-model:open="showRuleListModal"
+      :title="t('options.ruleListModalTitle')"
+      :description="t('options.ruleListModalDesc')"
+      max-width="max-w-3xl"
+    >
+      <div class="flex flex-col gap-3 mt-2">
+        <div class="flex flex-col sm:flex-row gap-2 justify-between items-stretch sm:items-center">
+          <div class="relative flex-1">
+            <Search :size="14" class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            <input
+              v-model="ruleListSearchQuery"
+              type="text"
+              :placeholder="t('options.searchRulesPlaceholder')"
+              class="w-full pl-9 pr-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/60 rounded-xl text-slate-800 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+            />
+          </div>
+          <div class="flex items-center gap-2 justify-between sm:justify-end">
+            <span class="text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">
+              {{ ruleListSearchQuery ? t('options.filteredRulesCount').replace('{count}', String(filteredRuleListLines.length)) : t('options.totalRulesCount').replace('{count}', String(currentRuleListLines.length)) }}
+            </span>
+            <UiButton
+              variant="outline"
+              size="sm"
+              class="flex items-center gap-1.5 shrink-0"
+              @click="copyRuleList"
+            >
+              <Copy :size="13" />
+              {{ t('options.copyRules') }}
+            </UiButton>
+          </div>
+        </div>
+
+        <!-- Rules content viewer -->
+        <div class="h-96 overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-900 p-3 font-mono text-xs text-slate-200">
+          <div v-if="filteredRuleListLines.length === 0" class="flex items-center justify-center h-full text-slate-400">
+            {{ currentRuleListLines.length === 0 ? t('options.noRulesCached') : t('options.noRulesMatch') }}
+          </div>
+          <div v-else class="space-y-0.5">
+            <div
+              v-for="(line, idx) in filteredRuleListLines.slice(0, ruleListDisplayLimit)"
+              :key="idx"
+              class="flex items-start gap-3 py-0.5 hover:bg-slate-800/60 px-1.5 rounded"
+            >
+              <span class="text-slate-500 select-none w-12 text-right shrink-0">{{ idx + 1 }}</span>
+              <span
+                class="break-all"
+                :class="{
+                  'text-slate-500 italic': line.startsWith('!') || line.startsWith('['),
+                  'text-emerald-400': line.startsWith('@@'),
+                  'text-sky-300': !line.startsWith('!') && !line.startsWith('[') && !line.startsWith('@@')
+                }"
+              >{{ line }}</span>
+            </div>
+            <div v-if="filteredRuleListLines.length > ruleListDisplayLimit" class="pt-3 pb-1 text-center">
+              <UiButton variant="ghost" size="sm" class="text-xs text-blue-400 hover:text-blue-300" @click="loadMoreRules">
+                {{ t('options.loadMoreRules').replace('{count}', String(filteredRuleListLines.length - ruleListDisplayLimit)) }}
+              </UiButton>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex justify-end pt-2 border-t border-slate-100 dark:border-white/5">
+          <UiButton variant="secondary" size="sm" @click="showRuleListModal = false">
+            {{ t('common.close') }}
+          </UiButton>
+        </div>
+      </div>
+    </UiDialog>
   </div>
 </template>
