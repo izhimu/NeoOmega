@@ -53,6 +53,8 @@ const loadCurrentTab = async () => {
 const fetchData = () => {
   if (currentTabId.value <= 0 || typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) return;
 
+  // Heartbeat: keeps request monitoring alive across service worker restarts
+  chrome.runtime.sendMessage({ type: 'START_TAB_MONITOR' });
   chrome.runtime.sendMessage(
     { type: 'GET_TAB_REQUESTS', tabId: currentTabId.value },
     (res) => {
@@ -135,6 +137,7 @@ const openOptions = async () => {
 };
 
 onMounted(() => {
+  chrome.runtime?.sendMessage?.({ type: 'START_TAB_MONITOR' });
   refreshState();
   document.title = `${t('sidepanel.title')} - ${t('sidepanel.subtitle')}`;
   pollTimer = window.setInterval(fetchData, 2000);
@@ -144,6 +147,7 @@ onMounted(() => {
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer);
   if (cleanThemeListener) cleanThemeListener();
+  chrome.runtime?.sendMessage?.({ type: 'STOP_TAB_MONITOR' });
 });
 </script>
 

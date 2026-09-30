@@ -169,7 +169,8 @@ export function conditionToPacCode(condition: RuleCondition): string {
       return `/${pattern.replace(/(?<!\\)\//g, '\\/')}/i.test(url)`;
 
     case 'KeywordCondition':
-      return `url.indexOf(${JSON.stringify(pattern)}) !== -1`;
+      // Case-insensitive to match matchCondition() semantics
+      return `url.toLowerCase().indexOf(${JSON.stringify(pattern.toLowerCase())}) !== -1`;
 
     case 'IpCondition': {
       const [ip, bitsStr] = pattern.split('/');

@@ -238,3 +238,66 @@ describe('PAC Generator', () => {
     expect(sandbox('https://google.com/', 'google.com')).toBe('DIRECT');
   });
 });
+
+describe('PAC performance codegen', () => {
+  const fixedProxy: FixedProfile = {
+    id: 'proxy1',
+    name: 'Local Proxy',
+    profileType: 'FixedProfile',
+    fallbackProxy: { scheme: 'http', host: '127.0.0.1', port: 7890 },
+    bypassList: [],
+  };
+  const direct: Profile = { id: 'direct', name: 'Direct', profileType: 'DirectProfile' };
+
+  const makeSwitch = (rulesCache: string[]): SwitchProfile => ({
+    id: 'autoSwitch',
+    name: 'Auto Switch',
+    profileType: 'SwitchProfile',
+    defaultProfileId: 'direct',
+    rules: [],
+    ruleList: {
+      id: 'rl1',
+      url: 'https://example.com/rules.txt',
+      format: 'autoproxy',
+      matchProfileId: 'proxy1',
+      defaultProfileId: 'direct',
+      enabled: true,
+      rulesCache,
+    },
+  });
+
+  const profiles: Record<string, Profile> = { proxy1: fixedProxy, direct };
+
+  it('compiles host-suffix rules into a map lookup instead of linear regexes', () => {
+    const pac = generatePacScript(makeSwitch(['||a.com', '@@||b.a.com', '||c.net']), profiles);
+    expect(pac).toContain('var hostRules = {');
+    expect(pac).not.toContain('a\\.com/i.test');
+    const sandbox = new Function(`${pac}\nreturn FindProxyForURL;`)();
+    expect(sandbox('https://a.com/', 'a.com')).toBe('PROXY 127.0.0.1:7890');
+    expect(sandbox('https://x.a.com/', 'x.a.com')).toBe('PROXY 127.0.0.1:7890');
+    // longest suffix wins: whitelist subdomain beats proxy parent
+    expect(sandbox('https://b.a.com/', 'b.a.com')).toBe('DIRECT');
+    expect(sandbox('https://www.c.net/', 'www.c.net')).toBe('PROXY 127.0.0.1:7890');
+    expect(sandbox('https://other.org/', 'other.org')).toBe('DIRECT');
+  });
+
+  it('dedupes repeated rule list entries', () => {
+    const pac = generatePacScript(makeSwitch(['||dup.com', '||dup.com', '|http://x.example/a', '|http://x.example/a']), profiles);
+    const count = (sub: string) => pac.split(sub).length - 1;
+    expect(count('dup.com')).toBe(1);
+    expect(count('x\\.example')).toBe(1);
+  });
+
+  it('whitelist wins over proxy on identical suffix', () => {
+    const pac = generatePacScript(makeSwitch(['||same.com', '@@||same.com']), profiles);
+    const sandbox = new Function(`${pac}\nreturn FindProxyForURL;`)();
+    expect(sandbox('https://same.com/', 'same.com')).toBe('DIRECT');
+  });
+
+  it('keyword rules are case-insensitive in generated PAC', () => {
+    const pac = generatePacScript(makeSwitch(['KeywordABC']), profiles);
+    const sandbox = new Function(`${pac}\nreturn FindProxyForURL;`)();
+    expect(sandbox('http://x.com/KEYWORDabc', 'x.com')).toBe('PROXY 127.0.0.1:7890');
+    expect(sandbox('http://x.com/nothing', 'x.com')).toBe('DIRECT');
+  });
+});

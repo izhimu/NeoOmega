@@ -3,7 +3,7 @@ import { initAuthManager, setTempProxyCredentials, clearTempProxyCredentials } f
 import { generateTestPacScript } from '../src/core/pac/generator';
 import { ProxyManager } from '../src/core/proxy/proxy-manager';
 import { getSettings, saveSettings, setActiveProfileId } from '../src/core/storage/storage';
-import type { ProxyServer, SwitchProfile, TabNetworkError, TabRequestLog } from '../src/core/types';
+import type { AppSettings, ProxyServer, SwitchProfile, TabNetworkError, TabRequestLog } from '../src/core/types';
 
 export default defineBackground(() => {
   initAuthManager();
@@ -94,6 +94,8 @@ export default defineBackground(() => {
     }
   };
 
+  let proxyTestRunning = false;
+
   const testProxyServer = async (
     proxy: ProxyServer,
     testUrl?: string,
@@ -102,6 +104,10 @@ export default defineBackground(() => {
     if (typeof chrome === 'undefined' || !chrome.proxy?.settings) {
       throw new Error('Chrome proxy API not available');
     }
+    if (proxyTestRunning) {
+      throw new Error('已有代理测试进行中，请稍候 (Another proxy test is running)');
+    }
+    proxyTestRunning = true;
 
     const defaultUrl = mode === 'bandwidth'
       ? 'https://speed.cloudflare.com/__down?bytes=5000000'
@@ -221,9 +227,14 @@ export default defineBackground(() => {
       };
     } finally {
       clearTimeout(timeoutId);
+      proxyTestRunning = false;
       try {
-        if (activeProfile) {
-          await ProxyManager.applyProfile(activeProfile, settings.profiles);
+        // Re-read settings: user may have switched profiles while the test ran.
+        // Restoring the stale snapshot would clobber the new active profile.
+        const fresh = await getSettings();
+        const current = fresh.profiles[fresh.activeProfileId];
+        if (current) {
+          await ProxyManager.applyProfile(current, fresh.profiles);
         } else {
           const { promise: clearPromise, resolve: clearResolve } = Promise.withResolvers<void>();
           chrome.proxy.settings.clear({ scope: 'regular' }, () => clearResolve());
@@ -234,72 +245,96 @@ export default defineBackground(() => {
       }
     }
   };
-  // Track network requests and errors for Side Panel & quick rule adding
-  if (chrome.webRequest?.onCompleted) {
-    chrome.webRequest.onCompleted.addListener(
-      (details) => {
-        if (details.tabId <= 0) return;
-        try {
-          const urlObj = new URL(details.url);
-          const reqs = tabRequests.get(details.tabId) || [];
-          reqs.unshift({
-            id: details.requestId,
-            url: details.url,
-            host: urlObj.hostname,
-            method: details.method,
-            type: details.type,
-            statusCode: details.statusCode,
-            timestamp: Date.now(),
-          });
-          if (reqs.length > 80) reqs.length = 80;
-          tabRequests.set(details.tabId, reqs);
-        } catch {
-          // ignore invalid URLs
-        }
-      },
-      { urls: ['<all_urls>'] }
-    );
-  }
+  // Track network requests and errors for Side Panel & quick rule adding.
+  // Listeners registered on demand only: error tracking while
+  // enableErrorMonitoring is set (Popup), request log while Side Panel is open.
+  let errorTrackingOn = false;
+  let requestLogOn = false;
 
-  if (chrome.webRequest?.onErrorOccurred) {
-    chrome.webRequest.onErrorOccurred.addListener(
-      (details) => {
-        if (details.tabId <= 0 || details.error === 'net::ERR_ABORTED') {
-          return;
-        }
+  const onCompletedListener = (details: chrome.webRequest.OnCompletedDetails) => {
+    if (details.tabId <= 0) return;
+    try {
+      const urlObj = new URL(details.url);
+      const reqs = tabRequests.get(details.tabId) || [];
+      reqs.unshift({
+        id: details.requestId,
+        url: details.url,
+        host: urlObj.hostname,
+        method: details.method,
+        type: details.type,
+        statusCode: details.statusCode,
+        timestamp: Date.now(),
+      });
+      if (reqs.length > 80) reqs.length = 80;
+      tabRequests.set(details.tabId, reqs);
+    } catch {
+      // ignore invalid URLs
+    }
+  };
 
-        try {
-          const urlObj = new URL(details.url);
-          const errors = tabErrors.get(details.tabId) || [];
-          if (!errors.some((e) => e.host === urlObj.hostname)) {
-            errors.push({
-              url: details.url,
-              host: urlObj.hostname,
-              error: details.error,
-              timestamp: Date.now(),
-            });
-            tabErrors.set(details.tabId, errors);
-          }
+  const onErrorListener = (details: chrome.webRequest.OnErrorOccurredDetails) => {
+    if (details.tabId <= 0 || details.error === 'net::ERR_ABORTED') {
+      return;
+    }
+    try {
+      const urlObj = new URL(details.url);
+      const errors = tabErrors.get(details.tabId) || [];
+      if (!errors.some((e) => e.host === urlObj.hostname)) {
+        errors.push({
+          url: details.url,
+          host: urlObj.hostname,
+          error: details.error,
+          timestamp: Date.now(),
+        });
+        tabErrors.set(details.tabId, errors);
+      }
+      const reqs = tabRequests.get(details.tabId) || [];
+      reqs.unshift({
+        id: details.requestId,
+        url: details.url,
+        host: urlObj.hostname,
+        method: details.method,
+        type: details.type,
+        error: details.error,
+        timestamp: Date.now(),
+      });
+      if (reqs.length > 80) reqs.length = 80;
+      tabRequests.set(details.tabId, reqs);
+    } catch {
+      // ignore invalid URLs
+    }
+  };
 
-          const reqs = tabRequests.get(details.tabId) || [];
-          reqs.unshift({
-            id: details.requestId,
-            url: details.url,
-            host: urlObj.hostname,
-            method: details.method,
-            type: details.type,
-            error: details.error,
-            timestamp: Date.now(),
-          });
-          if (reqs.length > 80) reqs.length = 80;
-          tabRequests.set(details.tabId, reqs);
-        } catch {
-          // ignore invalid URLs
-        }
-      },
-      { urls: ['<all_urls>'] }
-    );
-  }
+  const syncWebRequestListeners = () => {
+    if (!chrome.webRequest?.onCompleted) return;
+    const hasCompleted = chrome.webRequest.onCompleted.hasListener(onCompletedListener);
+    if (requestLogOn && !hasCompleted) {
+      chrome.webRequest.onCompleted.addListener(onCompletedListener, { urls: ['<all_urls>'] });
+    } else if (!requestLogOn && hasCompleted) {
+      chrome.webRequest.onCompleted.removeListener(onCompletedListener);
+    }
+    const wantError = requestLogOn || errorTrackingOn;
+    const hasError = chrome.webRequest.onErrorOccurred.hasListener(onErrorListener);
+    if (wantError && !hasError) {
+      chrome.webRequest.onErrorOccurred.addListener(onErrorListener, { urls: ['<all_urls>'] });
+    } else if (!wantError && hasError) {
+      chrome.webRequest.onErrorOccurred.removeListener(onErrorListener);
+    }
+  };
+
+  getSettings()
+    .then((s) => {
+      errorTrackingOn = !!s.enableErrorMonitoring;
+      syncWebRequestListeners();
+    })
+    .catch(() => {});
+  chrome.storage?.onChanged?.addListener((changes, area) => {
+    if (area !== 'local') return;
+    const change = changes['neo_omega_settings'];
+    if (!change) return;
+    errorTrackingOn = !!(change.newValue as AppSettings | undefined)?.enableErrorMonitoring;
+    syncWebRequestListeners();
+  });
 
   // Clean up tab error and request cache on tab close
   chrome.tabs?.onRemoved.addListener((tabId) => {
@@ -317,6 +352,21 @@ export default defineBackground(() => {
     if (message.type === 'GET_TAB_REQUESTS') {
       const requests = tabRequests.get(message.tabId) || [];
       sendResponse({ requests });
+      return false;
+    }
+
+    if (message.type === 'START_TAB_MONITOR') {
+      requestLogOn = true;
+      syncWebRequestListeners();
+      sendResponse({ success: true });
+      return false;
+    }
+
+    if (message.type === 'STOP_TAB_MONITOR') {
+      requestLogOn = false;
+      tabRequests.clear();
+      syncWebRequestListeners();
+      sendResponse({ success: true });
       return false;
     }
 

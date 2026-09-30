@@ -144,22 +144,50 @@ export function generateSwitchPacScript(
     const rl = profile.ruleList;
     const matchDirective = getProfileDirective(rl.matchProfileId, profiles);
     const defaultDirective = getProfileDirective(rl.defaultProfileId || profile.defaultProfileId, profiles);
+    // Dedupe + split: plain host-suffix rules ('*.example.com') go into an O(labels)
+    // map lookup (longest suffix wins, whitelist wins ties); regex/url rules stay linear.
+    // Note: a suffix-map hit returns before linear whitelist regexes — overlapping
+    // url-regex whitelist vs host-suffix proxy conflicts resolve in favor of the map.
+    const seen = new Set<string>();
+    const suffixMap = new Map<string, string>();
     const whitelistLines: string[] = [];
     const proxyLines: string[] = [];
+    const SUFFIX_RE = /^\*\.([A-Za-z0-9.-]+)$/;
     for (let i = 0; i < cache.length; i++) {
       const line = cache[i];
       if (!line) continue;
       const rule = parseAutoProxyLine(line, i, rl.matchProfileId, rl.defaultProfileId || profile.defaultProfileId);
-      if (rule) {
-        const testCode = conditionToPacCode(rule.condition);
-        const directive = rule.profileId === rl.matchProfileId ? matchDirective : defaultDirective;
-        const lineCode = `  if (${testCode}) return ${JSON.stringify(directive)};`;
-        if (rule.profileId === rl.matchProfileId) {
-          proxyLines.push(lineCode);
-        } else {
-          whitelistLines.push(lineCode);
+      if (!rule) continue;
+      const key = `${rule.condition.conditionType}:${rule.condition.pattern}:${rule.profileId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const isWhitelist = rule.profileId !== rl.matchProfileId;
+      const directive = isWhitelist ? defaultDirective : matchDirective;
+      if (rule.condition.conditionType === 'HostWildcardCondition') {
+        const m = SUFFIX_RE.exec(rule.condition.pattern);
+        if (m?.[1]) {
+          const suffix = m[1].toLowerCase();
+          if (!suffixMap.has(suffix) || isWhitelist) suffixMap.set(suffix, directive);
+          continue;
         }
       }
+      const lineCode = `  if (${conditionToPacCode(rule.condition)}) return ${JSON.stringify(directive)};`;
+      if (isWhitelist) {
+        whitelistLines.push(lineCode);
+      } else {
+        proxyLines.push(lineCode);
+      }
+    }
+    if (suffixMap.size > 0) {
+      const entries = [...suffixMap.entries()]
+        .map(([suffix, d]) => `${JSON.stringify(suffix)}:${JSON.stringify(d)}`)
+        .join(',');
+      lines.push(`  var hostRules = {${entries}};`);
+      lines.push('  var hostParts = host.split(".");');
+      lines.push('  for (var i = 0; i < hostParts.length; i++) {');
+      lines.push('    var hit = hostRules[hostParts.slice(i).join(".")];');
+      lines.push('    if (hit) return hit;');
+      lines.push('  }');
     }
     lines.push(...whitelistLines, ...proxyLines);
   }
