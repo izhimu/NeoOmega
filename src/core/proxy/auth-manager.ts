@@ -41,6 +41,7 @@ export function findProxyCredentials(
         fixed.proxyForHttp,
         fixed.proxyForHttps,
         fixed.proxyForFtp,
+        ...(fixed.fallbackServers ?? []),
       ];
 
       for (const server of servers) {

@@ -109,6 +109,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'auto',
   language: 'auto',
   enableErrorMonitoring: true,
+  ruleListUpdateInterval: 120,
 };
 
 const STORAGE_KEY = 'neo_omega_settings';

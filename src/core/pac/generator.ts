@@ -28,6 +28,18 @@ export function formatProxyDirective(server?: ProxyServer): string {
 }
 
 /**
+ * Format FixedProfile proxy chain: primary + failover servers joined with ';'
+ * Chromium tries each in order on connection failure.
+ */
+export function formatFixedChain(profile: FixedProfile): string {
+  const primary = profile.fallbackProxy || profile.proxyForHttps || profile.proxyForHttp;
+  const chain = [primary, ...(profile.fallbackServers ?? [])]
+    .filter((s): s is ProxyServer => !!s?.host)
+    .map(formatProxyDirective);
+  return chain.length ? chain.join('; ') : 'DIRECT';
+}
+
+/**
  * Resolve target profile for virtual profiles and aliases
  */
 export function resolveProfile(
@@ -64,16 +76,7 @@ function getProfileDirective(
 
     case 'FixedProfile': {
       const fixed = resolved as FixedProfile;
-      if (fixed.fallbackProxy) {
-        return formatProxyDirective(fixed.fallbackProxy);
-      }
-      if (fixed.proxyForHttps) {
-        return formatProxyDirective(fixed.proxyForHttps);
-      }
-      if (fixed.proxyForHttp) {
-        return formatProxyDirective(fixed.proxyForHttp);
-      }
-      return 'DIRECT';
+      return formatFixedChain(fixed);
     }
 
     default:
@@ -112,7 +115,7 @@ export function generateFixedPacScript(profile: FixedProfile): string {
   }
 
   // 3. Fallback
-  const fallback = formatProxyDirective(profile.fallbackProxy);
+  const fallback = formatFixedChain(profile);
   lines.push(`  return ${JSON.stringify(fallback)};`);
   lines.push('}');
 

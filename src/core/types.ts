@@ -84,6 +84,8 @@ export interface FixedProfile extends BaseProfile {
   proxyForFtp?: ProxyServer;
   // Fallback / Single proxy
   fallbackProxy?: ProxyServer;
+  // Additional failover proxies, tried in order after primary (PAC ';' chain)
+  fallbackServers?: ProxyServer[];
   // Bypass conditions (e.g. <local>, 127.0.0.1, *.lan)
   bypassList: RuleCondition[];
 }
@@ -121,6 +123,7 @@ export interface AppSettings {
   theme: 'auto' | 'light' | 'dark';
   language?: 'auto' | 'zh_CN' | 'en';
   enableErrorMonitoring: boolean;
+  ruleListUpdateInterval?: number; // minutes, default 120
   syncConfig?: {
     type: 'none' | 'webdav' | 'gist';
     url?: string;

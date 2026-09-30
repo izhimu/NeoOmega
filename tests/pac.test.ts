@@ -301,3 +301,36 @@ describe('PAC performance codegen', () => {
     expect(sandbox('http://x.com/nothing', 'x.com')).toBe('DIRECT');
   });
 });
+
+describe('FixedProfile failover chain', () => {
+  it('appends fallbackServers after the primary proxy', () => {
+    const fixed: FixedProfile = {
+      id: 'p1',
+      name: 'P1',
+      profileType: 'FixedProfile',
+      fallbackProxy: { scheme: 'http', host: '127.0.0.1', port: 7890 },
+      fallbackServers: [
+        { scheme: 'socks5', host: '10.0.0.2', port: 1080 },
+        { scheme: 'https', host: '10.0.0.3', port: 443 },
+      ],
+      bypassList: [],
+    };
+    const pac = generatePacScript(fixed, { p1: fixed });
+    const sandbox = new Function(`${pac}\nreturn FindProxyForURL;`)();
+    expect(sandbox('https://x.com/', 'x.com'))
+      .toBe('PROXY 127.0.0.1:7890; SOCKS5 10.0.0.2:1080; SOCKS 10.0.0.2:1080; HTTPS 10.0.0.3:443');
+  });
+
+  it('omits empty fallback servers and falls back to DIRECT when no proxy', () => {
+    const fixed: FixedProfile = {
+      id: 'p1',
+      name: 'P1',
+      profileType: 'FixedProfile',
+      bypassList: [],
+      fallbackServers: [{ scheme: 'http', host: '', port: 0 }],
+    };
+    const pac = generatePacScript(fixed, { p1: fixed });
+    const sandbox = new Function(`${pac}\nreturn FindProxyForURL;`)();
+    expect(sandbox('https://x.com/', 'x.com')).toBe('DIRECT');
+  });
+});

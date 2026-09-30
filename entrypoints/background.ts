@@ -31,7 +31,9 @@ export default defineBackground(() => {
 
   // Setup periodic rule list update alarm (every 2 hours)
   if (chrome.alarms) {
-    chrome.alarms.create('neo_omega_update_rules', { periodInMinutes: 120 });
+    getSettings().then((s) => {
+      chrome.alarms.create('neo_omega_update_rules', { periodInMinutes: Math.max(15, s.ruleListUpdateInterval ?? 120) });
+    });
     chrome.alarms.onAlarm.addListener(async (alarm) => {
       if (alarm.name === 'neo_omega_update_rules') {
         await updateAllRuleLists();
@@ -334,6 +336,11 @@ export default defineBackground(() => {
     const change = changes['neo_omega_settings'];
     if (!change) return;
     errorTrackingOn = !!(change.newValue as AppSettings | undefined)?.enableErrorMonitoring;
+    const oldIv = (change.oldValue as AppSettings | undefined)?.ruleListUpdateInterval ?? 120;
+    const newIv = (change.newValue as AppSettings | undefined)?.ruleListUpdateInterval ?? 120;
+    if (chrome.alarms && oldIv !== newIv) {
+      chrome.alarms.create('neo_omega_update_rules', { periodInMinutes: Math.max(15, newIv) });
+    }
     syncWebRequestListeners();
   });
 

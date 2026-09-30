@@ -52,6 +52,11 @@ export function parseSwitchyOmegaBackup(jsonStr: string): AppSettings {
     throw new Error(`Failed to parse SwitchyOmega JSON backup: ${message}`);
   }
 
+  // NeoOmega native backup: plain AppSettings JSON
+  if (raw['profiles'] && typeof raw['activeProfileId'] === 'string') {
+    return raw as unknown as AppSettings;
+  }
+
   const profiles: Record<string, Profile> = {
     direct: {
       id: 'direct',

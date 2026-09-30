@@ -22,6 +22,7 @@ import {
   Activity,
   Zap,
   Gauge,
+  RefreshCw,
 } from 'lucide-vue-next';
 import { Toaster, toast } from 'vue-sonner';
 import { decodeRuleListText } from '../../src/core/parsers/autoproxy';
@@ -478,6 +479,16 @@ const removeBypass = (indexOrId: number | string) => {
   }
 };
 
+const addFallbackServer = () => {
+  const fp = fixedProfile.value;
+  if (!fp) return;
+  if (!Array.isArray(fp.fallbackServers)) fp.fallbackServers = [];
+  fp.fallbackServers.push({ scheme: 'http', host: '', port: 7890 });
+};
+const removeFallbackServer = (idx: number) => {
+  fixedProfile.value?.fallbackServers?.splice(idx, 1);
+};
+
 // Backup Import / Export
 const handleFileImport = async (e: Event) => {
   const target = e.target as HTMLInputElement;
@@ -819,6 +830,38 @@ onUnmounted(() => {
                 :placeholder="t('options.passwordPlaceholder')"
                 @update:model-value="updateProxyPassword"
               />
+            </div>
+          </div>
+
+          <!-- Failover proxy chain -->
+          <div class="flex flex-col gap-3 w-full">
+            <div class="flex items-center justify-between">
+              <div>
+                <h3 class="text-sm font-bold text-slate-900 dark:text-white">{{ t('options.fallbackServersTitle') }}</h3>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{{ t('options.fallbackServersDesc') }}</p>
+              </div>
+              <UiButton variant="outline" size="sm" @click="addFallbackServer">
+                <Plus :size="14" />
+                {{ t('options.fallbackServersAdd') }}
+              </UiButton>
+            </div>
+            <div
+              v-for="(srv, idx) in (fixedProfile.fallbackServers || [])"
+              :key="idx"
+              class="flex gap-2 items-center"
+            >
+              <UiSelect v-model="srv.scheme" :options="schemeOptions" class="w-32" />
+              <UiInput v-model="srv.host" placeholder="host" class="flex-1" />
+              <UiInput
+                :model-value="srv.port"
+                type="number"
+                placeholder="port"
+                class="w-28"
+                @update:model-value="srv.port = Number($event)"
+              />
+              <UiButton variant="ghost" size="sm" @click="removeFallbackServer(idx)">
+                <X :size="14" />
+              </UiButton>
             </div>
           </div>
 
@@ -1360,6 +1403,20 @@ onUnmounted(() => {
               v-model="settings.theme"
               :options="themeOptions"
               @update:model-value="saveCurrentSettings"
+            />
+          </div>
+
+          <div class="p-5 sm:p-6 bg-slate-50/60 dark:bg-slate-950/60 border border-slate-200/80 dark:border-white/10 rounded-2xl sm:rounded-3xl flex flex-col gap-3 shadow-xs">
+            <h3 class="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <RefreshCw :size="16" class="text-emerald-600 dark:text-emerald-400" />
+              {{ t('options.ruleListIntervalTitle') }}
+            </h3>
+            <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('options.ruleListIntervalDesc') }}</p>
+            <UiInput
+              type="number"
+              min="15"
+              :model-value="settings.ruleListUpdateInterval ?? 120"
+              @update:model-value="settings.ruleListUpdateInterval = Math.max(15, Number($event) || 120); saveCurrentSettings()"
             />
           </div>
         </div>
