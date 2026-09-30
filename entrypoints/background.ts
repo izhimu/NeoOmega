@@ -94,14 +94,23 @@ export default defineBackground(() => {
     }
   };
 
-  const testProxyServer = async (proxy: ProxyServer, testUrl = 'http://cp.cloudflare.com/generate_204') => {
+  const testProxyServer = async (
+    proxy: ProxyServer,
+    testUrl?: string,
+    mode: 'latency' | 'bandwidth' = 'latency'
+  ) => {
     if (typeof chrome === 'undefined' || !chrome.proxy?.settings) {
       throw new Error('Chrome proxy API not available');
     }
 
+    const defaultUrl = mode === 'bandwidth'
+      ? 'https://speed.cloudflare.com/__down?bytes=5000000'
+      : 'http://cp.cloudflare.com/generate_204';
+    const effectiveTestUrl = testUrl?.trim() || defaultUrl;
+
     let parsedUrl: URL;
     try {
-      parsedUrl = new URL(testUrl);
+      parsedUrl = new URL(effectiveTestUrl);
     } catch {
       throw new Error('无效的测试目标 URL');
     }
@@ -116,32 +125,34 @@ export default defineBackground(() => {
 
     const testPac = generateTestPacScript(proxy, targetHost, activeProfile, settings.profiles);
 
-    await new Promise<void>((resolve, reject) => {
-      chrome.proxy.settings.set(
-        {
-          value: {
-            mode: 'pac_script',
-            pacScript: { data: testPac, mandatory: true },
-          },
-          scope: 'regular',
+    const { promise: setPromise, resolve: setResolve, reject: setReject } = Promise.withResolvers<void>();
+    chrome.proxy.settings.set(
+      {
+        value: {
+          mode: 'pac_script',
+          pacScript: { data: testPac, mandatory: true },
         },
-        () => {
-          if (chrome.runtime.lastError) {
-            reject(new Error(chrome.runtime.lastError.message));
-          } else {
-            resolve();
-          }
+        scope: 'regular',
+      },
+      () => {
+        if (chrome.runtime.lastError) {
+          setReject(new Error(chrome.runtime.lastError.message));
+        } else {
+          setResolve();
         }
-      );
-    });
+      }
+    );
+    await setPromise;
 
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    const { promise: delayPromise, resolve: delayResolve } = Promise.withResolvers<void>();
+    setTimeout(delayResolve, 60);
+    await delayPromise;
 
-    const urlWithBuster = new URL(testUrl);
+    const urlWithBuster = new URL(effectiveTestUrl);
     urlWithBuster.searchParams.set('_t', Date.now().toString());
 
     const controller = new AbortController();
-    const timeoutMs = 8000;
+    const timeoutMs = mode === 'bandwidth' ? 18000 : 8000;
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     const startTime = performance.now();
 
@@ -151,13 +162,47 @@ export default defineBackground(() => {
         signal: controller.signal,
         cache: 'no-store',
       });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      }
+
+      let speedMBps: number | undefined;
+      let speedMbps: number | undefined;
+      let totalBytes: number | undefined;
+
+      if (mode === 'bandwidth') {
+        const reader = res.body?.getReader();
+        let bytesCount = 0;
+        if (reader) {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value) bytesCount += value.byteLength;
+          }
+        } else {
+          const blob = await res.blob();
+          bytesCount = blob.size;
+        }
+        totalBytes = bytesCount;
+        const totalDurationSec = (performance.now() - startTime) / 1000;
+        if (totalDurationSec > 0 && bytesCount > 0) {
+          const bytesPerSec = bytesCount / totalDurationSec;
+          speedMBps = Number((bytesPerSec / (1024 * 1024)).toFixed(2));
+          speedMbps = Number(((bytesPerSec * 8) / 1000000).toFixed(2));
+        }
+      }
+
       const latency = Math.round(performance.now() - startTime);
       return {
         success: true,
         latency,
+        speedMBps,
+        speedMbps,
+        totalBytes,
+        mode,
         status: res.status,
         statusText: res.statusText,
-        testUrl,
+        testUrl: effectiveTestUrl,
       };
     } catch (err: unknown) {
       const latency = Math.round(performance.now() - startTime);
@@ -168,8 +213,9 @@ export default defineBackground(() => {
       return {
         success: false,
         latency,
+        mode,
         error: errMsg,
-        testUrl,
+        testUrl: effectiveTestUrl,
       };
     } finally {
       clearTimeout(timeoutId);
@@ -177,9 +223,9 @@ export default defineBackground(() => {
         if (activeProfile) {
           await ProxyManager.applyProfile(activeProfile, settings.profiles);
         } else {
-          await new Promise<void>((resolve) => {
-            chrome.proxy.settings.clear({ scope: 'regular' }, () => resolve());
-          });
+          const { promise: clearPromise, resolve: clearResolve } = Promise.withResolvers<void>();
+          chrome.proxy.settings.clear({ scope: 'regular' }, () => clearResolve());
+          await clearPromise;
         }
       } catch (cleanupErr) {
         console.error('[NeoOmega] Failed to restore proxy after test:', cleanupErr);
@@ -339,7 +385,7 @@ export default defineBackground(() => {
     }
 
     if (message.type === 'TEST_PROXY') {
-      testProxyServer(message.proxy, message.testUrl)
+      testProxyServer(message.proxy, message.testUrl, message.mode || 'latency')
         .then((result) => {
           sendResponse(result);
         })

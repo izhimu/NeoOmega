@@ -21,6 +21,7 @@ import {
   Search,
   Activity,
   Zap,
+  Gauge,
 } from 'lucide-vue-next';
 import { Toaster, toast } from 'vue-sonner';
 import { decodeRuleListText } from '../../src/core/parsers/autoproxy';
@@ -308,6 +309,10 @@ const loadMoreRules = () => {
 interface SpeedTestResult {
   success: boolean;
   latency?: number;
+  speedMBps?: number;
+  speedMbps?: number;
+  totalBytes?: number;
+  mode?: 'latency' | 'bandwidth';
   status?: number;
   statusText?: string;
   error?: string;
@@ -316,8 +321,11 @@ interface SpeedTestResult {
 }
 
 const isTestingSpeed = ref(false);
+const isTestingBandwidth = ref(false);
+const speedTestMode = ref<'latency' | 'bandwidth'>('latency');
 const speedTestResults = ref<Record<string, SpeedTestResult>>({});
 const speedTestTarget = ref('http://cp.cloudflare.com/generate_204');
+const bandwidthTarget = ref('https://speed.cloudflare.com/__down?bytes=5000000');
 
 const speedTestTargetOptions = computed(() => [
   { value: 'http://cp.cloudflare.com/generate_204', label: 'Cloudflare (HTTP 204)' },
@@ -326,27 +334,42 @@ const speedTestTargetOptions = computed(() => [
   { value: 'https://www.qualcomm.cn/generate_204', label: 'Domestic (HTTP 204)' },
 ]);
 
+const bandwidthTargetOptions = computed(() => [
+  { value: 'https://speed.cloudflare.com/__down?bytes=5000000', label: 'Cloudflare 5 MB' },
+  { value: 'https://speed.cloudflare.com/__down?bytes=10000000', label: 'Cloudflare 10 MB' },
+  { value: 'https://speed.cloudflare.com/__down?bytes=1000000', label: 'Cloudflare 1 MB' },
+  { value: 'https://speed.cloudflare.com/__down?bytes=25000000', label: 'Cloudflare 25 MB' },
+]);
+
 const currentProfileSpeedTest = computed(() => {
   if (!fixedProfile.value) return null;
   return speedTestResults.value[fixedProfile.value.id] || null;
 });
 
-const runSpeedTest = async () => {
+const runSpeedTest = async (mode: 'latency' | 'bandwidth' = 'latency') => {
   const fp = fixedProfile.value;
   if (!fp || !fp.fallbackProxy?.host || !fp.fallbackProxy?.port) {
     toast.error(t('options.speedTestHostMissing'));
     return;
   }
-  isTestingSpeed.value = true;
+  if (mode === 'bandwidth') {
+    isTestingBandwidth.value = true;
+  } else {
+    isTestingSpeed.value = true;
+  }
   const proxyPayload = JSON.parse(JSON.stringify(fp.fallbackProxy));
+  const targetUrl = mode === 'bandwidth' ? bandwidthTarget.value : speedTestTarget.value;
+
   chrome.runtime.sendMessage(
     {
       type: 'TEST_PROXY',
       proxy: proxyPayload,
-      testUrl: speedTestTarget.value,
+      testUrl: targetUrl,
+      mode,
     },
     (res: any) => {
       isTestingSpeed.value = false;
+      isTestingBandwidth.value = false;
       if (chrome.runtime.lastError) {
         console.error('Speed test runtime error:', chrome.runtime.lastError);
         toast.error(`${t('options.speedTestFailed')}: ${chrome.runtime.lastError.message}`);
@@ -361,7 +384,11 @@ const runSpeedTest = async () => {
           chrome.storage.local.set({ neo_omega_latency_cache: speedTestResults.value });
         }
         if (res.success) {
-          toast.success(`${t('options.speedTestTitle')}: ${res.latency} ms (${res.status || 'OK'})`);
+          if (res.speedMBps !== undefined) {
+            toast.success(`${t('options.bandwidthSpeed')}: ${res.speedMBps} MB/s (${res.speedMbps} Mbps) · ${res.latency} ms`);
+          } else {
+            toast.success(`${t('options.speedTestTitle')}: ${res.latency} ms (${res.status || 'OK'})`);
+          }
         } else {
           toast.error(`${t('options.speedTestFailed')}: ${res.error || 'Unknown error'}`);
         }
@@ -782,25 +809,39 @@ onUnmounted(() => {
           </div>
 
           <!-- Speed Test Card -->
-          <div class="p-4 rounded-2xl border border-slate-200/80 dark:border-white/10 bg-slate-100/50 dark:bg-slate-900/40 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+          <div class="p-4 rounded-2xl border border-slate-200/80 dark:border-white/10 bg-slate-100/50 dark:bg-slate-900/40 flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
             <div class="flex flex-col gap-1 min-w-0">
               <div class="flex items-center gap-2 flex-wrap">
                 <span class="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
                   <Activity :size="14" class="text-blue-600 dark:text-blue-400" />
                   {{ t('options.speedTestTitle') }}
                 </span>
-                <span
-                  v-if="currentProfileSpeedTest"
-                  class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold font-mono border"
-                  :class="currentProfileSpeedTest.success
-                    ? (currentProfileSpeedTest.latency! < 300
-                        ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400 border-emerald-200 dark:border-emerald-500/20'
-                        : 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400 border-amber-200 dark:border-amber-500/20')
-                    : 'bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-400 border-red-200 dark:border-red-500/20'"
-                >
-                  <span class="w-1.5 h-1.5 rounded-full" :class="currentProfileSpeedTest.success ? (currentProfileSpeedTest.latency! < 300 ? 'bg-emerald-500' : 'bg-amber-500') : 'bg-red-500'" />
-                  {{ currentProfileSpeedTest.success ? `${currentProfileSpeedTest.latency} ms` : t('options.speedTestFailed') }}
-                </span>
+                <template v-if="currentProfileSpeedTest">
+                  <span
+                    v-if="currentProfileSpeedTest.success"
+                    class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold font-mono border"
+                    :class="currentProfileSpeedTest.speedMBps !== undefined
+                      ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400 border-emerald-200 dark:border-emerald-500/20'
+                      : (currentProfileSpeedTest.latency! < 300
+                          ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400 border-emerald-200 dark:border-emerald-500/20'
+                          : 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400 border-amber-200 dark:border-amber-500/20')"
+                  >
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                    <span v-if="currentProfileSpeedTest.speedMBps !== undefined">
+                      ⚡ {{ currentProfileSpeedTest.speedMBps }} MB/s ({{ currentProfileSpeedTest.speedMbps }} Mbps)
+                    </span>
+                    <span :class="{ 'opacity-60': currentProfileSpeedTest.speedMBps !== undefined }">
+                      {{ currentProfileSpeedTest.latency }} ms
+                    </span>
+                  </span>
+                  <span
+                    v-else
+                    class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold font-mono border bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-400 border-red-200 dark:border-red-500/20"
+                  >
+                    <span class="w-1.5 h-1.5 rounded-full bg-red-500" />
+                    {{ t('options.speedTestFailed') }}
+                  </span>
+                </template>
                 <span v-if="currentProfileSpeedTest && !currentProfileSpeedTest.success" class="text-[11px] text-red-500 dark:text-red-400 truncate max-w-[200px]" :title="currentProfileSpeedTest.error">
                   ({{ currentProfileSpeedTest.error }})
                 </span>
@@ -809,23 +850,58 @@ onUnmounted(() => {
                 {{ t('options.speedTestDesc') }}
               </span>
             </div>
-            <div class="flex items-center gap-2 shrink-0">
+            <div class="flex items-center gap-2 flex-wrap sm:flex-nowrap shrink-0">
+              <!-- Mode Selector -->
+              <div class="flex items-center gap-1 bg-slate-200/60 dark:bg-white/5 p-1 rounded-xl text-xs">
+                <button
+                  type="button"
+                  class="px-2.5 py-1 rounded-lg font-medium transition-all cursor-pointer text-xs flex items-center gap-1"
+                  :class="speedTestMode === 'latency' ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs font-semibold' : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'"
+                  @click="speedTestMode = 'latency'"
+                >
+                  <Zap :size="12" />
+                  {{ t('options.testSpeed') }}
+                </button>
+                <button
+                  type="button"
+                  class="px-2.5 py-1 rounded-lg font-medium transition-all cursor-pointer text-xs flex items-center gap-1"
+                  :class="speedTestMode === 'bandwidth' ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs font-semibold' : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'"
+                  @click="speedTestMode = 'bandwidth'"
+                >
+                  <Gauge :size="12" />
+                  {{ t('options.testBandwidth') }}
+                </button>
+              </div>
+
+              <!-- Target Dropdown -->
               <UiSelect
+                v-if="speedTestMode === 'latency'"
                 v-model="speedTestTarget"
                 size="sm"
                 :options="speedTestTargetOptions"
                 class="w-44 text-xs"
               />
+              <UiSelect
+                v-else
+                v-model="bandwidthTarget"
+                size="sm"
+                :options="bandwidthTargetOptions"
+                class="w-44 text-xs"
+              />
+
+              <!-- Trigger Button -->
               <UiButton
                 type="button"
                 variant="outline"
                 size="sm"
-                :loading="isTestingSpeed"
+                :loading="speedTestMode === 'bandwidth' ? isTestingBandwidth : isTestingSpeed"
                 class="flex items-center gap-1.5 shrink-0 font-medium"
-                @click="runSpeedTest"
+                @click="runSpeedTest(speedTestMode)"
               >
-                <Zap :size="14" />
-                {{ isTestingSpeed ? t('options.testingSpeed') : t('options.testSpeed') }}
+                <component :is="speedTestMode === 'bandwidth' ? Gauge : Zap" :size="14" />
+                {{ (speedTestMode === 'bandwidth' ? isTestingBandwidth : isTestingSpeed)
+                  ? (speedTestMode === 'bandwidth' ? t('options.testingBandwidth') : t('options.testingSpeed'))
+                  : (speedTestMode === 'bandwidth' ? t('options.testBandwidth') : t('options.testSpeed')) }}
               </UiButton>
             </div>
           </div>
