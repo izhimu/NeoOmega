@@ -9,7 +9,7 @@ import type { RuleCondition } from '../types';
  */
 export function wildcardToRegExpString(pattern: string): string {
   return pattern
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&') // escape regex chars except * and ?
+    .replace(/[.+^${}()|[\]\\/]/g, '\\$&') // escape regex chars except * and ? (incl. / for PAC literals)
     .replace(/\*/g, '.*')
     .replace(/\?/g, '.');
 }
@@ -158,7 +158,7 @@ export function conditionToPacCode(condition: RuleCondition): string {
     }
 
     case 'HostRegexCondition':
-      return `/${pattern.replace(/\//g, '\\/')}/i.test(host)`;
+      return `/${pattern.replace(/(?<!\\)\//g, '\\/')}/i.test(host)`;
 
     case 'UrlWildcardCondition': {
       const reg = `^${wildcardToRegExpString(pattern)}$`;
@@ -166,7 +166,7 @@ export function conditionToPacCode(condition: RuleCondition): string {
     }
 
     case 'UrlRegexCondition':
-      return `/${pattern.replace(/\//g, '\\/')}/i.test(url)`;
+      return `/${pattern.replace(/(?<!\\)\//g, '\\/')}/i.test(url)`;
 
     case 'KeywordCondition':
       return `url.indexOf(${JSON.stringify(pattern)}) !== -1`;

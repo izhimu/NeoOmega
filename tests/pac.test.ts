@@ -190,6 +190,44 @@ describe('PAC Generator', () => {
     expect(sandbox('https://unmatched.com/', 'unmatched.com')).toBe('DIRECT');
   });
 
+  it('keeps PAC valid when ruleList contains URL rules with slashes (gfwlist |http://...)', () => {
+    const fixedProxy: FixedProfile = {
+      id: 'proxy1',
+      name: 'Local Proxy',
+      profileType: 'FixedProfile',
+      fallbackProxy: { scheme: 'socks5', host: '192.168.31.221', port: 1080 },
+      bypassList: [],
+    };
+    const switchProfile: SwitchProfile = {
+      id: 'autoSwitch',
+      name: 'Auto Switch',
+      profileType: 'SwitchProfile',
+      defaultProfileId: 'direct',
+      rules: [],
+      ruleList: {
+        id: 'rl1',
+        url: 'https://example.com/rules.txt',
+        format: 'autoproxy',
+        matchProfileId: 'proxy1',
+        defaultProfileId: 'direct',
+        enabled: true,
+        rulesCache: ['|http://blocked.example/path', '@@|http://ok.example/', '/^https?:\\/\\/[^\\/]+blogspot\\.(.*)/'],
+      },
+    };
+    const profiles: Record<string, Profile> = {
+      proxy1: fixedProxy,
+      direct: { id: 'direct', name: 'Direct', profileType: 'DirectProfile' },
+      autoSwitch: switchProfile,
+    };
+
+    const pac = generatePacScript(switchProfile, profiles);
+    // SyntaxError here = mandatory PAC breaks ALL traffic in Chrome
+    const sandbox = new Function(`${pac}\nreturn FindProxyForURL;`)();
+    expect(sandbox('http://blocked.example/path', 'blocked.example')).toContain('SOCKS5 192.168.31.221:1080');
+    expect(sandbox('http://ok.example/', 'ok.example')).toBe('DIRECT');
+    expect(sandbox('https://news.blogspot.com/', 'news.blogspot.com')).toContain('SOCKS5 192.168.31.221:1080');
+  });
+
   it('generates test PAC script routing only target host to test proxy', () => {
     const testProxy: ProxyServer = { scheme: 'socks5', host: '192.168.1.10', port: 1080 };
     const targetHost = 'cp.cloudflare.com';
