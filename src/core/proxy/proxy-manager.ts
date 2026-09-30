@@ -6,8 +6,14 @@
 import { generatePacScript, resolveProfile } from '../pac/generator';
 import { getActiveProfile, getSettings } from '../storage/storage';
 import type { Profile } from '../types';
+let lastAppliedKey: string | null = null;
 
 export class ProxyManager {
+  /** Drop cached proxy state; required after any direct chrome.proxy.settings write (e.g. proxy test) */
+  static invalidateCache(): void {
+    lastAppliedKey = null;
+  }
+
   /**
    * Apply a profile to Chromium proxy settings
    */
@@ -23,38 +29,38 @@ export class ProxyManager {
       if (resolved) target = resolved;
     }
 
+    const setProxy = async (value: chrome.proxy.ProxyConfig, key: string): Promise<void> => {
+      if (lastAppliedKey === key) return; // PAC unchanged: skip Chromium recompile + stack reset
+      await chrome.proxy.settings.set({ value, scope: 'regular' });
+      lastAppliedKey = key;
+    };
+
     switch (target.profileType) {
       case 'SystemProfile': {
         // Return proxy control to Chromium/OS
-        await chrome.proxy.settings.clear({ scope: 'regular' });
+        if (lastAppliedKey !== 'system') {
+          await chrome.proxy.settings.clear({ scope: 'regular' });
+          lastAppliedKey = 'system';
+        }
         break;
       }
 
       case 'DirectProfile': {
-        await chrome.proxy.settings.set({
-          value: { mode: 'direct' },
-          scope: 'regular',
-        });
+        await setProxy({ mode: 'direct' }, 'direct');
         break;
       }
 
       case 'PacProfile': {
         if (target.pacUrl) {
-          await chrome.proxy.settings.set({
-            value: {
-              mode: 'pac_script',
-              pacScript: { url: target.pacUrl, mandatory: true },
-            },
-            scope: 'regular',
-          });
+          await setProxy(
+            { mode: 'pac_script', pacScript: { url: target.pacUrl, mandatory: true } },
+            `pacurl:${target.pacUrl}`
+          );
         } else if (target.pacScript) {
-          await chrome.proxy.settings.set({
-            value: {
-              mode: 'pac_script',
-              pacScript: { data: target.pacScript, mandatory: true },
-            },
-            scope: 'regular',
-          });
+          await setProxy(
+            { mode: 'pac_script', pacScript: { data: target.pacScript, mandatory: true } },
+            `pacdata:${target.pacScript}`
+          );
         }
         break;
       }
@@ -63,13 +69,10 @@ export class ProxyManager {
       case 'SwitchProfile': {
         // Compile to clean Chromium PAC script data
         const pacData = generatePacScript(target, profiles);
-        await chrome.proxy.settings.set({
-          value: {
-            mode: 'pac_script',
-            pacScript: { data: pacData, mandatory: true },
-          },
-          scope: 'regular',
-        });
+        await setProxy(
+          { mode: 'pac_script', pacScript: { data: pacData, mandatory: true } },
+          `pacdata:${pacData}`
+        );
         break;
       }
     }

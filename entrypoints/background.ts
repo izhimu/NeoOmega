@@ -228,6 +228,7 @@ export default defineBackground(() => {
     } finally {
       clearTimeout(timeoutId);
       proxyTestRunning = false;
+      ProxyManager.invalidateCache(); // test wrote proxy settings directly; force re-apply
       try {
         // Re-read settings: user may have switched profiles while the test ran.
         // Restoring the stale snapshot would clobber the new active profile.
