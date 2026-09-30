@@ -1,7 +1,6 @@
 <script lang="ts" setup>
 import { onMounted, onUnmounted, ref } from 'vue';
-import { Settings, Check, Activity, ShieldCheck, ArrowUpRight } from 'lucide-vue-next';
-import { Toaster, toast } from 'vue-sonner';
+import { Settings, Check, Activity, ArrowUpRight } from 'lucide-vue-next';
 import { getSettings } from '../../src/core/storage/storage';
 import type { AppSettings, TabNetworkError } from '../../src/core/types';
 import { useI18n, resolveLocale } from '../../src/core/i18n';
@@ -56,14 +55,8 @@ const loadState = async () => {
 
 const switchProfile = async (profileId: string) => {
   if (!settings.value || settings.value.activeProfileId === profileId) return;
-
-  const targetName = getProfileDisplayName(settings.value.profiles[profileId]) || profileId;
   settings.value.activeProfileId = profileId;
-  chrome.runtime.sendMessage({ type: 'SWITCH_PROFILE', profileId }, (res) => {
-    if (res && res.success) {
-      toast.success(`${targetName}`);
-    }
-  });
+  chrome.runtime.sendMessage({ type: 'SWITCH_PROFILE', profileId });
 };
 
 const addQuickRule = (host: string) => {
@@ -73,10 +66,7 @@ const addQuickRule = (host: string) => {
     (res) => {
       addingRule.value = false;
       if (res && res.success) {
-        toast.success(`${t('popup.ruleAdded')}: *.${host}`);
         tabErrors.value = tabErrors.value.filter((e) => e.host !== host);
-      } else {
-        toast.error(res?.error || t('popup.addRuleFailed'));
       }
     }
   );
@@ -111,19 +101,17 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="flex flex-col gap-3 p-3.5 select-none font-sans text-slate-800 dark:text-slate-100 bg-slate-50 dark:bg-slate-950 w-[340px] min-h-[260px]">
-    <Toaster position="bottom-center" rich-colors :duration="2000" />
-
+  <div class="flex flex-col gap-2.5 p-3 select-none font-sans text-slate-800 dark:text-slate-100 bg-slate-50 dark:bg-slate-950 w-[240px]">
     <!-- Header -->
-    <header class="flex justify-between items-center pb-2.5 border-b border-slate-200/80 dark:border-white/10">
-      <div class="flex items-center gap-2.5">
+    <header class="flex justify-between items-center pb-2 border-b border-slate-200/80 dark:border-white/10">
+      <div class="flex items-center gap-2 min-w-0">
         <AppLogo size="sm" />
-        <div class="flex flex-col">
-          <h1 class="m-0 text-sm font-bold tracking-tight text-slate-900 dark:text-white leading-tight">{{ t('popup.title') }}</h1>
-          <span v-if="currentTabHost" class="text-[10px] text-slate-400 dark:text-slate-500 truncate max-w-[170px]" :title="currentTabHost">{{ currentTabHost }}</span>
+        <div class="flex flex-col min-w-0">
+          <h1 class="m-0 text-xs font-bold tracking-tight text-slate-900 dark:text-white leading-tight truncate">{{ t('popup.title') }}</h1>
+          <span v-if="currentTabHost" class="text-[10px] text-slate-400 dark:text-slate-500 truncate max-w-[130px]" :title="currentTabHost">{{ currentTabHost }}</span>
         </div>
       </div>
-      <div class="flex items-center gap-1.5">
+      <div class="flex items-center gap-1 shrink-0">
         <UiButton
           variant="outline"
           size="icon"
@@ -137,28 +125,28 @@ onUnmounted(() => {
     </header>
 
     <!-- Profile List -->
-    <div v-if="settings" class="flex flex-col gap-1.5">
+    <div v-if="settings" class="flex flex-col gap-1">
       <div
         v-for="id in (settings.order || [])"
         :key="id"
-        class="group flex justify-between items-center px-3.5 py-2.5 rounded-2xl cursor-pointer transition-all duration-150 border"
+        class="group flex justify-between items-center px-3 py-2 rounded-xl cursor-pointer transition-all duration-150 border"
         :class="settings.activeProfileId === id
           ? 'bg-blue-50/90 dark:bg-slate-800/90 border-blue-500/40 dark:border-blue-500/50 text-slate-950 dark:text-white shadow-xs font-semibold'
           : 'bg-white dark:bg-slate-900/60 border-slate-200/80 dark:border-white/5 hover:bg-slate-100/80 dark:hover:bg-slate-800/60 hover:border-slate-300 dark:hover:border-white/15 text-slate-700 dark:text-slate-200 shadow-xs'"
         @click="switchProfile(id)"
       >
-        <div class="flex items-center gap-2.5 min-w-0">
+        <div class="flex items-center gap-2 min-w-0">
           <span
-            class="w-2.5 h-2.5 rounded-full shrink-0 transition-transform group-hover:scale-125"
+            class="w-2 h-2 rounded-full shrink-0 transition-transform group-hover:scale-125"
             :style="{ backgroundColor: settings.profiles[id]?.color || '#64748b', boxShadow: `0 0 6px ${settings.profiles[id]?.color || '#64748b'}80` }"
           />
           <span class="text-xs truncate font-medium">{{ getProfileDisplayName(settings.profiles[id]) }}</span>
         </div>
-        <div class="flex items-center gap-2 shrink-0">
-          <UiBadge v-if="settings.profiles[id]?.profileType === 'SwitchProfile'" variant="outline" size="sm" class="text-[9px] py-0 px-1.5">
+        <div class="flex items-center gap-1.5 shrink-0">
+          <UiBadge v-if="settings.profiles[id]?.profileType === 'SwitchProfile'" variant="outline" size="sm" class="text-[9px] py-0 px-1">
             {{ t('common.auto') }}
           </UiBadge>
-          <Check v-if="settings.activeProfileId === id" :size="15" class="text-blue-600 dark:text-blue-400 font-bold" />
+          <Check v-if="settings.activeProfileId === id" :size="14" class="text-blue-600 dark:text-blue-400 font-bold" />
         </div>
       </div>
     </div>
@@ -192,12 +180,8 @@ onUnmounted(() => {
       </div>
     </Transition>
 
-    <!-- Footer Quick Status -->
-    <footer class="mt-auto pt-2 border-t border-slate-200/60 dark:border-white/5 flex justify-between items-center text-[10px] text-slate-400 dark:text-slate-500">
-      <span class="flex items-center gap-1">
-        <ShieldCheck :size="12" class="text-emerald-500" />
-        {{ t('common.ready') }}
-      </span>
+    <!-- Footer Quick Link -->
+    <footer class="pt-1.5 border-t border-slate-200/60 dark:border-white/5 flex justify-end items-center text-[10px] text-slate-400 dark:text-slate-500">
       <button
         class="hover:text-blue-600 dark:hover:text-blue-400 flex items-center gap-0.5 cursor-pointer transition-colors"
         @click="openOptions"

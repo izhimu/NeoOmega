@@ -59,6 +59,6 @@ twitter.com
     const result = await fetchAndParseRuleList('https://example.com/gfwlist.txt', 'proxy', 'direct');
     expect(result.text).toBe(plain);
     expect(result.rules.length).toBe(1);
-    expect(result.rules[0].profileId).toBe('proxy');
+    expect(result.rules[0]?.profileId).toBe('proxy');
   });
 });
