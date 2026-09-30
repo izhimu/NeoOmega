@@ -597,7 +597,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="flex flex-col md:flex-row min-h-screen w-full bg-slate-50 dark:bg-slate-950 font-sans text-slate-800 dark:text-slate-100 select-none">
+  <div class="flex flex-col md:flex-row h-screen overflow-hidden w-full bg-slate-50 dark:bg-slate-950 font-sans text-slate-800 dark:text-slate-100 select-none">
     <Toaster position="top-right" rich-colors :duration="3000" />
 
     <!-- Mobile Header -->
@@ -725,7 +725,7 @@ onUnmounted(() => {
     </aside>
 
     <!-- Main Content Area -->
-    <main class="flex-1 w-full min-w-0 p-4 sm:p-6 md:p-8 lg:p-10 overflow-y-auto bg-slate-50/70 dark:bg-slate-950">
+    <main class="flex-1 w-full min-w-0 min-h-0 p-4 sm:p-6 md:p-8 lg:p-10 overflow-y-auto bg-slate-50/70 dark:bg-slate-950">
       <!-- Profile View -->
         <div
           v-if="activeProfileView"
