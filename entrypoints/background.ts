@@ -339,15 +339,14 @@ export default defineBackground(() => {
     }
 
     if (message.type === 'TEST_PROXY') {
-      (async () => {
-        try {
-          const result = await testProxyServer(message.proxy, message.testUrl);
+      testProxyServer(message.proxy, message.testUrl)
+        .then((result) => {
           sendResponse(result);
-        } catch (err) {
+        })
+        .catch((err) => {
           const msg = err instanceof Error ? err.message : String(err);
           sendResponse({ success: false, error: msg });
-        }
-      })();
+        });
       return true;
     }
 
