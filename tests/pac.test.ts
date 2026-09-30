@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { formatProxyDirective, generatePacScript, resolveProfile } from '../src/core/pac/generator';
+import { formatProxyDirective, generatePacScript, generateTestPacScript, resolveProfile } from '../src/core/pac/generator';
 import { matchCondition } from '../src/core/pac/matcher';
-import type { FixedProfile, Profile, SwitchProfile, VirtualProfile } from '../src/core/types';
+import type { FixedProfile, Profile, ProxyServer, SwitchProfile, VirtualProfile } from '../src/core/types';
 
 describe('Condition Matcher', () => {
   it('matches HostWildcardCondition correctly', () => {
@@ -188,5 +188,15 @@ describe('PAC Generator', () => {
     expect(sandbox('https://gfw.org/test', 'gfw.org')).toBe('PROXY 127.0.0.1:7890');
     expect(sandbox('https://whitelist.gfw.org/', 'whitelist.gfw.org')).toBe('DIRECT');
     expect(sandbox('https://unmatched.com/', 'unmatched.com')).toBe('DIRECT');
+  });
+
+  it('generates test PAC script routing only target host to test proxy', () => {
+    const testProxy: ProxyServer = { scheme: 'socks5', host: '192.168.1.10', port: 1080 };
+    const targetHost = 'cp.cloudflare.com';
+    const pac = generateTestPacScript(testProxy, targetHost);
+    const sandbox = new Function(`${pac}\nreturn FindProxyForURL;`)();
+
+    expect(sandbox('http://cp.cloudflare.com/generate_204', 'cp.cloudflare.com')).toBe('SOCKS5 192.168.1.10:1080; SOCKS 192.168.1.10:1080; DIRECT');
+    expect(sandbox('https://google.com/', 'google.com')).toBe('DIRECT');
   });
 });

@@ -19,6 +19,8 @@ import {
   Eye,
   Copy,
   Search,
+  Activity,
+  Zap,
 } from 'lucide-vue-next';
 import { Toaster, toast } from 'vue-sonner';
 import { decodeRuleListText } from '../../src/core/parsers/autoproxy';
@@ -296,6 +298,62 @@ const loadMoreRules = () => {
   ruleListDisplayLimit.value += 200;
 };
 
+interface SpeedTestResult {
+  success: boolean;
+  latency?: number;
+  status?: number;
+  statusText?: string;
+  error?: string;
+  testUrl: string;
+  timestamp: number;
+}
+
+const isTestingSpeed = ref(false);
+const speedTestResults = ref<Record<string, SpeedTestResult>>({});
+const speedTestTarget = ref('http://cp.cloudflare.com/generate_204');
+
+const speedTestTargetOptions = computed(() => [
+  { value: 'http://cp.cloudflare.com/generate_204', label: 'Cloudflare (HTTP 204)' },
+  { value: 'https://www.google.com/generate_204', label: 'Google (HTTPS 204)' },
+  { value: 'http://www.gstatic.com/generate_204', label: 'Gstatic (HTTP 204)' },
+  { value: 'https://www.qualcomm.cn/generate_204', label: 'Domestic (HTTP 204)' },
+]);
+
+const currentProfileSpeedTest = computed(() => {
+  if (!fixedProfile.value) return null;
+  return speedTestResults.value[fixedProfile.value.id] || null;
+});
+
+const runSpeedTest = async () => {
+  const fp = fixedProfile.value;
+  if (!fp || !fp.fallbackProxy?.host || !fp.fallbackProxy?.port) {
+    toast.error(t('options.speedTestHostMissing'));
+    return;
+  }
+  isTestingSpeed.value = true;
+  chrome.runtime.sendMessage(
+    {
+      type: 'TEST_PROXY',
+      proxy: fp.fallbackProxy,
+      testUrl: speedTestTarget.value,
+    },
+    (res: any) => {
+      isTestingSpeed.value = false;
+      if (res) {
+        speedTestResults.value[fp.id] = {
+          ...res,
+          timestamp: Date.now(),
+        };
+        if (res.success) {
+          toast.success(`${t('options.speedTestTitle')}: ${res.latency} ms (${res.status || 'OK'})`);
+        } else {
+          toast.error(`${t('options.speedTestFailed')}: ${res.error || 'Unknown error'}`);
+        }
+      }
+    }
+  );
+};
+
 // Bypass Pattern Management
 const updateProxyUsername = (val: string) => {
   const fp = fixedProfile.value;
@@ -551,10 +609,20 @@ onUnmounted(() => {
             :style="{ backgroundColor: settings.profiles[id]?.color || '#94a3b8', boxShadow: `0 0 6px ${settings.profiles[id]?.color || '#94a3b8'}80` }"
           />
           <span class="flex-1 text-xs truncate leading-normal">{{ getProfileDisplayName(settings.profiles[id]) || id }}</span>
+          <span
+            v-if="speedTestResults[id]"
+            class="text-[10px] font-mono px-1.5 py-0.5 rounded-md shrink-0 font-medium"
+            :class="speedTestResults[id].success
+              ? (speedTestResults[id].latency! < 300
+                  ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10'
+                  : 'text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10')
+              : 'text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-500/10'"
+          >
+            {{ speedTestResults[id].success ? `${speedTestResults[id].latency}ms` : 'ERR' }}
+          </span>
           <UiBadge
             v-if="settings.activeProfileId === id"
             variant="primary"
-            size="sm"
             class="bg-blue-600 text-white border-transparent px-1.5 py-0.5 text-[10px] font-bold"
           >
             {{ t('options.activeBadge') }}
@@ -607,9 +675,19 @@ onUnmounted(() => {
             </div>
             <div class="flex items-center gap-2.5 self-end sm:self-auto shrink-0">
               <UiButton
+                v-if="fixedProfile"
+                variant="outline"
+                size="sm"
+                :loading="isTestingSpeed"
+                class="flex items-center gap-1.5"
+                @click="runSpeedTest"
+              >
+                <Zap :size="13" />
+                {{ isTestingSpeed ? t('options.testingSpeed') : t('options.testSpeed') }}
+              </UiButton>
+              <UiButton
                 v-if="!['direct', 'system'].includes(activeProfileView.id)"
                 variant="destructive"
-                size="sm"
                 @click="promptDeleteProfile(activeProfileView.id)"
               >
                 <Trash2 :size="13" />
@@ -694,6 +772,54 @@ onUnmounted(() => {
                 :placeholder="t('options.passwordPlaceholder')"
                 @update:model-value="updateProxyPassword"
               />
+            </div>
+          </div>
+
+          <!-- Speed Test Card -->
+          <div class="p-4 rounded-2xl border border-slate-200/80 dark:border-white/10 bg-slate-100/50 dark:bg-slate-900/40 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+            <div class="flex flex-col gap-1 min-w-0">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                  <Activity :size="14" class="text-blue-600 dark:text-blue-400" />
+                  {{ t('options.speedTestTitle') }}
+                </span>
+                <span
+                  v-if="currentProfileSpeedTest"
+                  class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold font-mono border"
+                  :class="currentProfileSpeedTest.success
+                    ? (currentProfileSpeedTest.latency! < 300
+                        ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400 border-emerald-200 dark:border-emerald-500/20'
+                        : 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400 border-amber-200 dark:border-amber-500/20')
+                    : 'bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-400 border-red-200 dark:border-red-500/20'"
+                >
+                  <span class="w-1.5 h-1.5 rounded-full" :class="currentProfileSpeedTest.success ? (currentProfileSpeedTest.latency! < 300 ? 'bg-emerald-500' : 'bg-amber-500') : 'bg-red-500'" />
+                  {{ currentProfileSpeedTest.success ? `${currentProfileSpeedTest.latency} ms` : t('options.speedTestFailed') }}
+                </span>
+                <span v-if="currentProfileSpeedTest && !currentProfileSpeedTest.success" class="text-[11px] text-red-500 dark:text-red-400 truncate max-w-[200px]" :title="currentProfileSpeedTest.error">
+                  ({{ currentProfileSpeedTest.error }})
+                </span>
+              </div>
+              <span class="text-[11px] text-slate-500 dark:text-slate-400">
+                {{ t('options.speedTestDesc') }}
+              </span>
+            </div>
+            <div class="flex items-center gap-2 shrink-0">
+              <UiSelect
+                v-model="speedTestTarget"
+                size="sm"
+                :options="speedTestTargetOptions"
+                class="w-44 text-xs"
+              />
+              <UiButton
+                variant="outline"
+                size="sm"
+                :loading="isTestingSpeed"
+                class="flex items-center gap-1.5 shrink-0 font-medium"
+                @click="runSpeedTest"
+              >
+                <Zap :size="14" />
+                {{ isTestingSpeed ? t('options.testingSpeed') : t('options.testSpeed') }}
+              </UiButton>
             </div>
           </div>
 

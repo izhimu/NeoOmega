@@ -205,3 +205,30 @@ export function generatePacScript(
       return 'function FindProxyForURL(url, host) { return "DIRECT"; }';
   }
 }
+
+/**
+ * Generate a temporary PAC script for testing a specific proxy server against a target host
+ */
+export function generateTestPacScript(
+  targetProxy: ProxyServer,
+  targetHost: string,
+  currentProfile?: Profile,
+  profiles: Record<string, Profile> = {}
+): string {
+  const directive = formatProxyDirective(targetProxy);
+  const probeCondition = `if (host === ${JSON.stringify(targetHost)}) return ${JSON.stringify(directive + '; DIRECT')};`;
+
+  if (!currentProfile) {
+    return `function FindProxyForURL(url, host) {\n  ${probeCondition}\n  return "DIRECT";\n}`;
+  }
+
+  const baseScript = generatePacScript(currentProfile, profiles);
+  const needle = 'function FindProxyForURL(url, host) {';
+  const idx = baseScript.indexOf(needle);
+  if (idx !== -1) {
+    const insertPos = idx + needle.length;
+    return baseScript.slice(0, insertPos) + `\n  ${probeCondition}` + baseScript.slice(insertPos);
+  }
+
+  return `function FindProxyForURL(url, host) {\n  ${probeCondition}\n  return "DIRECT";\n}`;
+}

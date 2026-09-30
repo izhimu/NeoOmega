@@ -11,6 +11,20 @@ export interface AuthCredentials {
   password: string;
 }
 
+let tempProxyAuth: { host: string; port: number; auth: AuthCredentials } | null = null;
+
+export function setTempProxyCredentials(host: string, port: number, auth?: { username?: string; password?: string }): void {
+  if (auth?.username) {
+    tempProxyAuth = { host, port, auth: { username: auth.username, password: auth.password || '' } };
+  } else {
+    tempProxyAuth = null;
+  }
+}
+
+export function clearTempProxyCredentials(): void {
+  tempProxyAuth = null;
+}
+
 /**
  * Search profiles for configured credentials matching target host and port
  */
@@ -69,6 +83,15 @@ export function initAuthManager(): void {
 
       const host = details.challenger.host;
       const port = details.challenger.port;
+
+      if (
+        tempProxyAuth &&
+        tempProxyAuth.host.toLowerCase() === host.toLowerCase() &&
+        tempProxyAuth.port === port
+      ) {
+        if (callback) callback({ authCredentials: tempProxyAuth.auth });
+        return undefined;
+      }
 
       getSettings()
         .then((settings) => {

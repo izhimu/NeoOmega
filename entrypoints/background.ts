@@ -1,8 +1,9 @@
 import { fetchAndParseRuleList } from '../src/core/parsers/autoproxy';
-import { initAuthManager } from '../src/core/proxy/auth-manager';
+import { initAuthManager, setTempProxyCredentials, clearTempProxyCredentials } from '../src/core/proxy/auth-manager';
+import { generateTestPacScript } from '../src/core/pac/generator';
 import { ProxyManager } from '../src/core/proxy/proxy-manager';
 import { getSettings, saveSettings, setActiveProfileId } from '../src/core/storage/storage';
-import type { SwitchProfile, TabNetworkError, TabRequestLog } from '../src/core/types';
+import type { ProxyServer, SwitchProfile, TabNetworkError, TabRequestLog } from '../src/core/types';
 
 export default defineBackground(() => {
   initAuthManager();
@@ -89,6 +90,83 @@ export default defineBackground(() => {
       const active = settings.profiles[settings.activeProfileId];
       if (active) {
         await ProxyManager.applyProfile(active, settings.profiles);
+      }
+    }
+  };
+
+  const testProxyServer = async (proxy: ProxyServer, testUrl = 'http://cp.cloudflare.com/generate_204') => {
+    if (typeof chrome === 'undefined' || !chrome.proxy?.settings) {
+      throw new Error('Chrome proxy API not available');
+    }
+
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(testUrl);
+    } catch {
+      throw new Error('无效的测试目标 URL');
+    }
+
+    const targetHost = parsedUrl.hostname;
+    const settings = await getSettings();
+    const activeProfile = settings.profiles[settings.activeProfileId];
+
+    if (proxy.auth?.username) {
+      setTempProxyCredentials(proxy.host, proxy.port, proxy.auth);
+    }
+
+    const testPac = generateTestPacScript(proxy, targetHost, activeProfile, settings.profiles);
+
+    await chrome.proxy.settings.set({
+      value: {
+        mode: 'pac_script',
+        pacScript: { data: testPac, mandatory: true },
+      },
+      scope: 'regular',
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    const urlWithBuster = new URL(testUrl);
+    urlWithBuster.searchParams.set('_t', Date.now().toString());
+
+    const controller = new AbortController();
+    const timeoutMs = 8000;
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const startTime = performance.now();
+
+    try {
+      const res = await fetch(urlWithBuster.toString(), {
+        method: 'GET',
+        signal: controller.signal,
+        cache: 'no-store',
+      });
+      const latency = Math.round(performance.now() - startTime);
+      return {
+        success: true,
+        latency,
+        status: res.status,
+        statusText: res.statusText,
+        testUrl,
+      };
+    } catch (err: unknown) {
+      const latency = Math.round(performance.now() - startTime);
+      let errMsg = err instanceof Error ? err.message : String(err);
+      if (err instanceof Error && err.name === 'AbortError') {
+        errMsg = '连接超时 (Timeout)';
+      }
+      return {
+        success: false,
+        latency,
+        error: errMsg,
+        testUrl,
+      };
+    } finally {
+      clearTimeout(timeoutId);
+      clearTempProxyCredentials();
+      if (activeProfile) {
+        await ProxyManager.applyProfile(activeProfile, settings.profiles);
+      } else {
+        await chrome.proxy.settings.clear({ scope: 'regular' });
       }
     }
   };
@@ -235,6 +313,19 @@ export default defineBackground(() => {
         try {
           const count = await updateSingleRuleList(message.profileId, message.ruleList);
           sendResponse({ success: true, count });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          sendResponse({ success: false, error: msg });
+        }
+      })();
+      return true;
+    }
+
+    if (message.type === 'TEST_PROXY') {
+      (async () => {
+        try {
+          const result = await testProxyServer(message.proxy, message.testUrl);
+          sendResponse(result);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           sendResponse({ success: false, error: msg });
