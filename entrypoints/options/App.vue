@@ -119,6 +119,13 @@ const loadSettings = async () => {
   if (settings.value.order.length > 0 && !settings.value.profiles[currentProfileId.value]) {
     activeTab.value = `profile:${settings.value.order[0]}`;
   }
+  if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+    chrome.storage.local.get('neo_omega_latency_cache').then((cache) => {
+      if (cache?.neo_omega_latency_cache) {
+        speedTestResults.value = cache.neo_omega_latency_cache as Record<string, SpeedTestResult>;
+      }
+    });
+  }
 };
 
 const saveCurrentSettings = async () => {
@@ -350,6 +357,9 @@ const runSpeedTest = async () => {
           ...res,
           timestamp: Date.now(),
         };
+        if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+          chrome.storage.local.set({ neo_omega_latency_cache: speedTestResults.value });
+        }
         if (res.success) {
           toast.success(`${t('options.speedTestTitle')}: ${res.latency} ms (${res.status || 'OK'})`);
         } else {

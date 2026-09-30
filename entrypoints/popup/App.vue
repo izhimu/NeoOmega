@@ -17,6 +17,100 @@ const addingRule = ref(false);
 const { t, setLocale, getProfileDisplayName } = useI18n();
 let cleanThemeListener: (() => void) | null = null;
 
+interface LatencyItem {
+  latency?: number;
+  success: boolean;
+  status?: number;
+  error?: string;
+  timestamp: number;
+}
+
+const latencies = ref<Record<string, LatencyItem>>({});
+const testingIds = ref<Record<string, boolean>>({});
+
+const loadLatencyCache = async () => {
+  if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+    const res = await chrome.storage.local.get('neo_omega_latency_cache');
+    if (res?.neo_omega_latency_cache) {
+      latencies.value = res.neo_omega_latency_cache as Record<string, LatencyItem>;
+    }
+  }
+};
+
+const testFixedProfiles = async (force = false) => {
+  if (!settings.value?.profiles) return;
+  const now = Date.now();
+  const CACHE_TTL = 60 * 1000;
+
+  for (const id of (settings.value.order || [])) {
+    const profile = settings.value.profiles[id];
+    if (profile?.profileType === 'FixedProfile' && (profile as any).fallbackProxy?.host && (profile as any).fallbackProxy?.port) {
+      const cached = latencies.value[id];
+      if (!force && cached && (now - cached.timestamp < CACHE_TTL)) {
+        continue;
+      }
+      testingIds.value[id] = true;
+      try {
+        const proxyPayload = JSON.parse(JSON.stringify((profile as any).fallbackProxy));
+        await new Promise<void>((resolve) => {
+          chrome.runtime.sendMessage(
+            { type: 'TEST_PROXY', proxy: proxyPayload, testUrl: 'http://cp.cloudflare.com/generate_204' },
+            (res) => {
+              testingIds.value[id] = false;
+              if (chrome.runtime.lastError) {
+                latencies.value[id] = { success: false, error: chrome.runtime.lastError.message, timestamp: Date.now() };
+              } else if (res) {
+                latencies.value[id] = { ...res, timestamp: Date.now() };
+              }
+              resolve();
+            }
+          );
+        });
+      } catch {
+        testingIds.value[id] = false;
+      }
+    }
+  }
+
+  if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+    await chrome.storage.local.set({ neo_omega_latency_cache: latencies.value });
+  }
+};
+
+const retestProfile = async (id: string) => {
+  const profile = settings.value?.profiles[id];
+  if (!profile || profile.profileType !== 'FixedProfile' || !(profile as any).fallbackProxy?.host) return;
+  testingIds.value[id] = true;
+  const proxyPayload = JSON.parse(JSON.stringify((profile as any).fallbackProxy));
+  chrome.runtime.sendMessage(
+    { type: 'TEST_PROXY', proxy: proxyPayload, testUrl: 'http://cp.cloudflare.com/generate_204' },
+    async (res) => {
+      testingIds.value[id] = false;
+      if (chrome.runtime.lastError) {
+        latencies.value[id] = { success: false, error: chrome.runtime.lastError.message, timestamp: Date.now() };
+      } else if (res) {
+        latencies.value[id] = { ...res, timestamp: Date.now() };
+      }
+      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+        await chrome.storage.local.set({ neo_omega_latency_cache: latencies.value });
+      }
+    }
+  );
+};
+
+const getLatencyClass = (item?: LatencyItem) => {
+  if (!item || !item.success || item.latency === undefined) {
+    return 'text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-950/40 border-red-200/50 dark:border-red-800/40';
+  }
+  if (item.latency < 250) {
+    return 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200/60 dark:border-emerald-800/40';
+  }
+  if (item.latency < 600) {
+    return 'text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 border-amber-200/60 dark:border-amber-800/40';
+  }
+  return 'text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 border-rose-200/60 dark:border-rose-800/40';
+};
+
 const loadState = async () => {
   try {
     settings.value = await getSettings();
@@ -51,6 +145,8 @@ const loadState = async () => {
   } catch (err) {
     console.error('Failed to load popup state:', err);
   }
+  await loadLatencyCache();
+  testFixedProfiles();
 };
 
 const switchProfile = async (profileId: string) => {
@@ -101,7 +197,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="flex flex-col gap-2.5 p-2.5 select-none font-sans text-slate-800 dark:text-slate-100 bg-slate-50 dark:bg-slate-950 w-[210px]">
+  <div class="flex flex-col gap-2.5 p-2.5 select-none font-sans text-slate-800 dark:text-slate-100 bg-slate-50 dark:bg-slate-950 w-[220px]">
     <!-- Header -->
     <header class="flex justify-between items-center pb-2 border-b border-slate-200/80 dark:border-white/10">
       <div class="flex items-center gap-2 min-w-0">
@@ -143,6 +239,24 @@ onUnmounted(() => {
           <span class="text-xs truncate font-medium">{{ getProfileDisplayName(settings.profiles[id]) }}</span>
         </div>
         <div class="flex items-center gap-1.5 shrink-0">
+          <template v-if="settings.profiles[id]?.profileType === 'FixedProfile'">
+            <span
+              v-if="testingIds[id]"
+              class="text-[9px] font-mono text-slate-400 dark:text-slate-500 animate-pulse px-1 py-0.5 rounded bg-slate-100 dark:bg-slate-800 leading-none"
+            >
+              ...
+            </span>
+            <span
+              v-else-if="latencies[id]"
+              class="text-[9px] font-mono px-1 py-0.5 rounded border leading-none font-medium cursor-pointer hover:opacity-80 transition-opacity"
+              :class="getLatencyClass(latencies[id])"
+              :title="latencies[id].success ? `${latencies[id].latency}ms (${t('popup.clickToRetest')})` : (latencies[id].error || '超时')"
+              @click.stop="retestProfile(id)"
+            >
+              {{ latencies[id].success ? `${latencies[id].latency}ms` : 'ERR' }}
+            </span>
+          </template>
+
           <UiBadge v-if="settings.profiles[id]?.profileType === 'SwitchProfile'" variant="outline" size="sm" class="text-[9px] py-0 px-1">
             {{ t('common.auto') }}
           </UiBadge>
