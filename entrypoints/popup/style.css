@@ -1,7 +1,8 @@
-body {
+html, body {
   margin: 0;
   padding: 0;
-  width: 340px;
+  width: 210px;
+  overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -10,5 +11,6 @@ body {
 }
 
 #app {
+  width: 100%;
   padding: 0;
 }

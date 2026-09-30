@@ -101,14 +101,14 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="flex flex-col gap-2.5 p-3 select-none font-sans text-slate-800 dark:text-slate-100 bg-slate-50 dark:bg-slate-950 w-[240px]">
+  <div class="flex flex-col gap-2.5 p-2.5 select-none font-sans text-slate-800 dark:text-slate-100 bg-slate-50 dark:bg-slate-950 w-[210px]">
     <!-- Header -->
     <header class="flex justify-between items-center pb-2 border-b border-slate-200/80 dark:border-white/10">
       <div class="flex items-center gap-2 min-w-0">
         <AppLogo size="sm" />
         <div class="flex flex-col min-w-0">
           <h1 class="m-0 text-xs font-bold tracking-tight text-slate-900 dark:text-white leading-tight truncate">{{ t('popup.title') }}</h1>
-          <span v-if="currentTabHost" class="text-[10px] text-slate-400 dark:text-slate-500 truncate max-w-[130px]" :title="currentTabHost">{{ currentTabHost }}</span>
+          <span v-if="currentTabHost" class="text-[10px] text-slate-400 dark:text-slate-500 truncate max-w-[105px]" :title="currentTabHost">{{ currentTabHost }}</span>
         </div>
       </div>
       <div class="flex items-center gap-1 shrink-0">
