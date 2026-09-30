@@ -2,7 +2,10 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { Settings, Activity, ArrowUpRight, Globe } from 'lucide-vue-next';
 import { getSettings } from '../../src/core/storage/storage';
-import type { AppSettings, TabNetworkError } from '../../src/core/types';
+import type { AppSettings, Profile, SwitchRule, TabNetworkError } from '../../src/core/types';
+import { matchCondition } from '../../src/core/pac/matcher';
+import { parseAutoProxyLine } from '../../src/core/parsers/autoproxy';
+import { resolveProfile } from '../../src/core/pac/generator';
 import { useI18n, resolveLocale } from '../../src/core/i18n';
 import { applyTheme, initThemeListener } from '../../src/core/theme';
 import UiButton from '../../src/components/ui/UiButton.vue';
@@ -11,6 +14,7 @@ import AppLogo from '../../src/components/ui/AppLogo.vue';
 
 const settings = ref<AppSettings | null>(null);
 const currentTabHost = ref<string>('');
+const currentTabUrl = ref<string>('');
 const currentTabId = ref<number>(0);
 const tabErrors = ref<TabNetworkError[]>([]);
 const addingRule = ref(false);
@@ -39,6 +43,55 @@ const activeProfileLatency = computed(() => {
     return latencies.value[p.id]?.success ? latencies.value[p.id]?.latency : undefined;
   }
   return undefined;
+});
+
+type RoutingKind = 'direct' | 'proxy' | 'system';
+const verdictOf = (p: Profile | null | undefined): { kind: RoutingKind } => {
+  if (!p || p.profileType === 'DirectProfile') return { kind: 'direct' };
+  if (p.profileType === 'SystemProfile') return { kind: 'system' };
+  return { kind: 'proxy' };
+};
+
+// Mirrors generated PAC evaluation: profile rules in order, then rule list
+// (whitelist pass first, then proxy pass), then default profile.
+const routing = computed<{ kind: RoutingKind } | null>(() => {
+  const s = settings.value;
+  const active = activeProfile.value;
+  if (!s || !active) return null;
+  const base = resolveProfile(active.id, s.profiles) ?? active;
+  const url = currentTabUrl.value;
+  const host = currentTabHost.value;
+  if (!url || !host) return verdictOf(base);
+  if (base.profileType === 'FixedProfile') {
+    return base.bypassList?.some((c) => matchCondition(c, url, host)) ? { kind: 'direct' } : { kind: 'proxy' };
+  }
+  if (base.profileType === 'SwitchProfile') {
+    let matchedId: string | null = null;
+    for (const rule of base.rules) {
+      if (matchCondition(rule.condition, url, host)) {
+        matchedId = rule.profileId;
+        break;
+      }
+    }
+    const rl = base.ruleList;
+    if (matchedId === null && rl?.enabled && rl.rulesCache?.length) {
+      const parsed = rl.rulesCache
+        .map((l, i) => parseAutoProxyLine(l, i, rl.matchProfileId, rl.defaultProfileId))
+        .filter((r): r is SwitchRule => !!r);
+      for (const wantWhitelist of [true, false]) {
+        for (const r of parsed) {
+          if ((r.profileId !== rl.matchProfileId) !== wantWhitelist) continue;
+          if (matchCondition(r.condition, url, host)) {
+            matchedId = r.profileId;
+            break;
+          }
+        }
+        if (matchedId !== null) break;
+      }
+    }
+    return verdictOf(resolveProfile(matchedId ?? base.defaultProfileId, s.profiles));
+  }
+  return verdictOf(base);
 });
 
 const loadLatencyCache = async () => {
@@ -135,6 +188,7 @@ const loadState = async () => {
       const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
       if (tabs[0] && tabs[0].url) {
         currentTabId.value = tabs[0].id || 0;
+        currentTabUrl.value = tabs[0].url;
         try {
           const u = new URL(tabs[0].url);
           if (['http:', 'https:'].includes(u.protocol)) {
@@ -250,6 +304,14 @@ onUnmounted(() => {
             {{ currentTabHost || t('popup.directTab') }}
           </span>
         </div>
+        <div class="flex items-center gap-1 shrink-0">
+          <span
+            v-if="routing"
+            class="text-[9px] px-1.5 py-0.5 rounded-full font-semibold leading-none"
+            :class="routing.kind === 'direct' ? 'bg-emerald-500/20 text-emerald-300' : routing.kind === 'proxy' ? 'bg-blue-500/20 text-blue-300' : 'bg-slate-500/20 text-slate-300'"
+          >
+            {{ t(`popup.routing.${routing.kind}`) }}
+          </span>
         <span
           v-if="activeProfileLatency !== undefined"
           class="text-[9px] font-mono px-1.5 py-0.5 rounded-full font-semibold leading-none shrink-0"
@@ -257,6 +319,7 @@ onUnmounted(() => {
         >
           {{ activeProfileLatency }}ms
         </span>
+        </div>
       </div>
 
       <div class="flex items-center justify-between text-[10px] pt-1.5 border-t border-white/10">
