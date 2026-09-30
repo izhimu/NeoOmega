@@ -1,6 +1,6 @@
 <script lang="ts" setup>
-import { onMounted, onUnmounted, ref } from 'vue';
-import { Settings, Check, Activity, ArrowUpRight } from 'lucide-vue-next';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { Settings, Check, Activity, ArrowUpRight, Globe } from 'lucide-vue-next';
 import { getSettings } from '../../src/core/storage/storage';
 import type { AppSettings, TabNetworkError } from '../../src/core/types';
 import { useI18n, resolveLocale } from '../../src/core/i18n';
@@ -27,6 +27,19 @@ interface LatencyItem {
 
 const latencies = ref<Record<string, LatencyItem>>({});
 const testingIds = ref<Record<string, boolean>>({});
+const activeProfile = computed(() => {
+  if (!settings.value) return null;
+  return settings.value.profiles[settings.value.activeProfileId] || null;
+});
+
+const activeProfileLatency = computed(() => {
+  const p = activeProfile.value;
+  if (!p) return undefined;
+  if (p.profileType === 'FixedProfile') {
+    return latencies.value[p.id]?.success ? latencies.value[p.id]?.latency : undefined;
+  }
+  return undefined;
+});
 
 const loadLatencyCache = async () => {
   if (typeof chrome !== 'undefined' && chrome.storage?.local) {
@@ -201,9 +214,9 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="flex flex-col gap-2 p-2 select-none font-sans text-slate-800 dark:text-slate-100 bg-white dark:bg-slate-950 w-[240px]">
+  <div class="flex flex-col gap-2.5 p-2.5 select-none font-sans text-slate-800 dark:text-slate-100 bg-white dark:bg-slate-950 w-[250px]">
     <!-- Header -->
-    <header class="flex justify-between items-center px-1 py-0.5">
+    <header class="flex justify-between items-center px-1">
       <div class="flex items-center gap-2 min-w-0">
         <AppLogo size="sm" />
         <div class="flex flex-col min-w-0 leading-none">
@@ -212,17 +225,7 @@ onUnmounted(() => {
               {{ t('popup.title') }}
             </h1>
           </div>
-          <span
-            v-if="currentTabHost"
-            class="text-[10px] text-slate-400 dark:text-slate-500 font-mono truncate max-w-[130px] mt-0.5"
-            :title="currentTabHost"
-          >
-            {{ currentTabHost }}
-          </span>
-          <span
-            v-else
-            class="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5"
-          >
+          <span class="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
             {{ t('popup.profiles') }}
           </span>
         </div>
@@ -238,26 +241,59 @@ onUnmounted(() => {
       </div>
     </header>
 
+    <!-- Top Routing Hub Card -->
+    <div class="px-3 py-2 rounded-xl bg-slate-900 text-white dark:bg-slate-900 border border-slate-800 dark:border-white/10 shadow-sm flex flex-col gap-1.5">
+      <div class="flex items-center justify-between gap-1.5">
+        <div class="flex items-center gap-1.5 min-w-0">
+          <Globe :size="12" class="text-blue-400 shrink-0" />
+          <span class="text-[11px] font-medium truncate max-w-[145px]" :title="currentTabHost || t('popup.directTab')">
+            {{ currentTabHost || t('popup.directTab') }}
+          </span>
+        </div>
+        <span
+          v-if="activeProfileLatency !== undefined"
+          class="text-[9px] font-mono px-1.5 py-0.5 rounded-full font-semibold leading-none shrink-0"
+          :class="activeProfileLatency < 250 ? 'bg-emerald-500/20 text-emerald-300' : activeProfileLatency < 600 ? 'bg-amber-500/20 text-amber-300' : 'bg-rose-500/20 text-rose-300'"
+        >
+          {{ activeProfileLatency }}ms
+        </span>
+      </div>
+
+      <div class="flex items-center justify-between text-[10px] pt-1.5 border-t border-white/10">
+        <span class="text-slate-400">{{ t('popup.matchingProfile') }}</span>
+        <div class="flex items-center gap-1.5 text-slate-200 font-medium">
+          <span
+            class="w-1.5 h-1.5 rounded-full shrink-0 shadow-xs"
+            :style="{ backgroundColor: activeProfile?.color || '#3b82f6', boxShadow: `0 0 6px ${activeProfile?.color || '#3b82f6'}` }"
+          />
+          <span class="truncate max-w-[120px]">{{ getProfileDisplayName(activeProfile) }}</span>
+        </div>
+      </div>
+    </div>
+
     <!-- Profile List -->
-    <div
-      v-if="settings"
-      class="flex flex-col gap-0.5 bg-slate-50/80 dark:bg-slate-900/50 p-1 rounded-xl border border-slate-200/60 dark:border-white/5"
-    >
+    <div v-if="settings" class="flex flex-col gap-1.5">
       <div
         v-for="id in (settings.order || [])"
         :key="id"
-        class="group flex items-center justify-between px-2.5 py-1.5 rounded-lg cursor-pointer transition-all duration-150"
+        class="group flex items-center justify-between px-3 py-2.5 min-h-[38px] rounded-xl cursor-pointer transition-all duration-150 relative overflow-hidden"
         :class="settings.activeProfileId === id
-          ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs font-semibold'
-          : 'text-slate-600 dark:text-slate-400 hover:bg-white/60 dark:hover:bg-slate-800/40 hover:text-slate-900 dark:hover:text-slate-200'"
+          ? 'bg-blue-50/90 dark:bg-blue-500/15 border border-blue-500/40 dark:border-blue-400/40 text-blue-900 dark:text-blue-100 font-semibold shadow-xs'
+          : 'bg-white dark:bg-slate-900/60 border border-slate-200/70 dark:border-white/5 text-slate-700 dark:text-slate-300 hover:bg-slate-100/80 dark:hover:bg-slate-800/70 hover:border-slate-300 dark:hover:border-white/15'"
         @click="switchProfile(id)"
       >
-        <div class="flex items-center gap-2 min-w-0">
+        <!-- Active Left Indicator Bar -->
+        <span
+          v-if="settings.activeProfileId === id"
+          class="absolute left-0 top-2 bottom-2 w-1 bg-blue-600 dark:bg-blue-400 rounded-r-full"
+        />
+
+        <div class="flex items-center gap-2.5 min-w-0 pl-1">
           <span
-            class="w-2 h-2 rounded-full shrink-0 shadow-xs ring-1 ring-white dark:ring-slate-900 transition-transform group-hover:scale-125"
+            class="w-2.5 h-2.5 rounded-full shrink-0 shadow-xs ring-2 ring-white dark:ring-slate-900 transition-transform group-hover:scale-125"
             :style="{ backgroundColor: settings.profiles[id]?.color || '#64748b' }"
           />
-          <span class="text-xs truncate">{{ getProfileDisplayName(settings.profiles[id]) }}</span>
+          <span class="text-xs truncate font-medium">{{ getProfileDisplayName(settings.profiles[id]) }}</span>
         </div>
 
         <div class="flex items-center gap-1.5 shrink-0">
@@ -281,17 +317,19 @@ onUnmounted(() => {
 
           <span
             v-if="settings.profiles[id]?.profileType === 'SwitchProfile'"
-            class="text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-slate-200/60 dark:bg-slate-700/60 text-slate-500 dark:text-slate-400 leading-none"
+            class="text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-slate-150 dark:bg-slate-800 text-slate-500 dark:text-slate-400 leading-none border border-slate-200/60 dark:border-white/5"
           >
             {{ t('common.auto') }}
           </span>
 
-          <div class="w-4 h-4 flex items-center justify-center shrink-0">
-            <Check
+          <!-- Prominent Checkmark Badge Slot -->
+          <div class="w-5 h-5 flex items-center justify-center shrink-0">
+            <div
               v-if="settings.activeProfileId === id"
-              :size="14"
-              class="text-blue-600 dark:text-blue-400 stroke-[2.5]"
-            />
+              class="w-4 h-4 rounded-full bg-blue-600 dark:bg-blue-500 text-white flex items-center justify-center shadow-xs"
+            >
+              <Check :size="10" class="stroke-[3]" />
+            </div>
           </div>
         </div>
       </div>
