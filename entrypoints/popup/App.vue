@@ -100,15 +100,15 @@ const retestProfile = async (id: string) => {
 
 const getLatencyClass = (item?: LatencyItem) => {
   if (!item || !item.success || item.latency === undefined) {
-    return 'text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-950/40 border-red-200/50 dark:border-red-800/40';
+    return 'text-rose-600 dark:text-rose-400 bg-rose-50/80 dark:bg-rose-950/40 border-rose-200/60 dark:border-rose-900/40';
   }
   if (item.latency < 250) {
-    return 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200/60 dark:border-emerald-800/40';
+    return 'text-emerald-600 dark:text-emerald-400 bg-emerald-50/80 dark:bg-emerald-950/40 border-emerald-200/60 dark:border-emerald-900/40';
   }
   if (item.latency < 600) {
-    return 'text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 border-amber-200/60 dark:border-amber-800/40';
+    return 'text-amber-600 dark:text-amber-400 bg-amber-50/80 dark:bg-amber-950/40 border-amber-200/60 dark:border-amber-900/40';
   }
-  return 'text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 border-rose-200/60 dark:border-rose-800/40';
+  return 'text-rose-600 dark:text-rose-400 bg-rose-50/80 dark:bg-rose-950/40 border-rose-200/60 dark:border-rose-900/40';
 };
 
 const loadState = async () => {
@@ -124,7 +124,11 @@ const loadState = async () => {
         currentTabId.value = tabs[0].id || 0;
         try {
           const u = new URL(tabs[0].url);
-          currentTabHost.value = u.hostname;
+          if (['http:', 'https:'].includes(u.protocol)) {
+            currentTabHost.value = u.hostname;
+          } else {
+            currentTabHost.value = '';
+          }
         } catch {
           currentTabHost.value = '';
         }
@@ -197,58 +201,76 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="flex flex-col gap-2.5 p-2.5 select-none font-sans text-slate-800 dark:text-slate-100 bg-slate-50 dark:bg-slate-950 w-[220px]">
+  <div class="flex flex-col gap-2 p-2 select-none font-sans text-slate-800 dark:text-slate-100 bg-white dark:bg-slate-950 w-[240px]">
     <!-- Header -->
-    <header class="flex justify-between items-center pb-2 border-b border-slate-200/80 dark:border-white/10">
+    <header class="flex justify-between items-center px-1 py-0.5">
       <div class="flex items-center gap-2 min-w-0">
         <AppLogo size="sm" />
-        <div class="flex flex-col min-w-0">
-          <h1 class="m-0 text-xs font-bold tracking-tight text-slate-900 dark:text-white leading-tight truncate">{{ t('popup.title') }}</h1>
-          <span v-if="currentTabHost" class="text-[10px] text-slate-400 dark:text-slate-500 truncate max-w-[105px]" :title="currentTabHost">{{ currentTabHost }}</span>
+        <div class="flex flex-col min-w-0 leading-none">
+          <div class="flex items-center gap-1.5">
+            <h1 class="m-0 text-xs font-bold tracking-tight text-slate-900 dark:text-white leading-tight">
+              {{ t('popup.title') }}
+            </h1>
+          </div>
+          <span
+            v-if="currentTabHost"
+            class="text-[10px] text-slate-400 dark:text-slate-500 font-mono truncate max-w-[130px] mt-0.5"
+            :title="currentTabHost"
+          >
+            {{ currentTabHost }}
+          </span>
+          <span
+            v-else
+            class="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5"
+          >
+            {{ t('popup.profiles') }}
+          </span>
         </div>
       </div>
       <div class="flex items-center gap-1 shrink-0">
-        <UiButton
-          variant="outline"
-          size="icon"
-          class="h-7 w-7 rounded-xl"
+        <button
+          class="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800/80 transition-colors cursor-pointer"
           :title="t('popup.openSettings')"
           @click="openOptions"
         >
-          <Settings :size="14" />
-        </UiButton>
+          <Settings :size="15" />
+        </button>
       </div>
     </header>
 
     <!-- Profile List -->
-    <div v-if="settings" class="flex flex-col gap-1">
+    <div
+      v-if="settings"
+      class="flex flex-col gap-0.5 bg-slate-50/80 dark:bg-slate-900/50 p-1 rounded-xl border border-slate-200/60 dark:border-white/5"
+    >
       <div
         v-for="id in (settings.order || [])"
         :key="id"
-        class="group flex justify-between items-center px-3 py-2 rounded-xl cursor-pointer transition-all duration-150 border"
+        class="group flex items-center justify-between px-2.5 py-1.5 rounded-lg cursor-pointer transition-all duration-150"
         :class="settings.activeProfileId === id
-          ? 'bg-blue-50/90 dark:bg-slate-800/90 border-blue-500/40 dark:border-blue-500/50 text-slate-950 dark:text-white shadow-xs font-semibold'
-          : 'bg-white dark:bg-slate-900/60 border-slate-200/80 dark:border-white/5 hover:bg-slate-100/80 dark:hover:bg-slate-800/60 hover:border-slate-300 dark:hover:border-white/15 text-slate-700 dark:text-slate-200 shadow-xs'"
+          ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs font-semibold'
+          : 'text-slate-600 dark:text-slate-400 hover:bg-white/60 dark:hover:bg-slate-800/40 hover:text-slate-900 dark:hover:text-slate-200'"
         @click="switchProfile(id)"
       >
         <div class="flex items-center gap-2 min-w-0">
           <span
-            class="w-2 h-2 rounded-full shrink-0 transition-transform group-hover:scale-125"
-            :style="{ backgroundColor: settings.profiles[id]?.color || '#64748b', boxShadow: `0 0 6px ${settings.profiles[id]?.color || '#64748b'}80` }"
+            class="w-2 h-2 rounded-full shrink-0 shadow-xs ring-1 ring-white dark:ring-slate-900 transition-transform group-hover:scale-125"
+            :style="{ backgroundColor: settings.profiles[id]?.color || '#64748b' }"
           />
-          <span class="text-xs truncate font-medium">{{ getProfileDisplayName(settings.profiles[id]) }}</span>
+          <span class="text-xs truncate">{{ getProfileDisplayName(settings.profiles[id]) }}</span>
         </div>
+
         <div class="flex items-center gap-1.5 shrink-0">
           <template v-if="settings.profiles[id]?.profileType === 'FixedProfile'">
             <span
               v-if="testingIds[id]"
-              class="text-[9px] font-mono text-slate-400 dark:text-slate-500 animate-pulse px-1 py-0.5 rounded bg-slate-100 dark:bg-slate-800 leading-none"
+              class="text-[9px] font-mono text-slate-400 dark:text-slate-500 animate-pulse px-1.5 py-0.5 rounded-full bg-slate-200/50 dark:bg-slate-700/50 leading-none"
             >
               ...
             </span>
             <span
               v-else-if="latencies[id]"
-              class="text-[9px] font-mono px-1 py-0.5 rounded border leading-none font-medium cursor-pointer hover:opacity-80 transition-opacity"
+              class="text-[9px] font-mono px-1.5 py-0.5 rounded-full border leading-none font-medium cursor-pointer transition-transform hover:scale-105 select-none"
               :class="getLatencyClass(latencies[id])"
               :title="latencies[id].success ? `${latencies[id].latency}ms (${t('popup.clickToRetest')})` : (latencies[id].error || '超时')"
               @click.stop="retestProfile(id)"
@@ -257,33 +279,43 @@ onUnmounted(() => {
             </span>
           </template>
 
-          <UiBadge v-if="settings.profiles[id]?.profileType === 'SwitchProfile'" variant="outline" size="sm" class="text-[9px] py-0 px-1">
+          <span
+            v-if="settings.profiles[id]?.profileType === 'SwitchProfile'"
+            class="text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-slate-200/60 dark:bg-slate-700/60 text-slate-500 dark:text-slate-400 leading-none"
+          >
             {{ t('common.auto') }}
-          </UiBadge>
-          <Check v-if="settings.activeProfileId === id" :size="14" class="text-blue-600 dark:text-blue-400 font-bold" />
+          </span>
+
+          <div class="w-4 h-4 flex items-center justify-center shrink-0">
+            <Check
+              v-if="settings.activeProfileId === id"
+              :size="14"
+              class="text-blue-600 dark:text-blue-400 stroke-[2.5]"
+            />
+          </div>
         </div>
       </div>
     </div>
 
     <!-- Current Tab Error Monitoring / Quick Add -->
     <Transition name="fade">
-      <div v-if="tabErrors.length > 0" class="mt-1 p-3 bg-red-50/80 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 rounded-2xl text-xs flex flex-col gap-2">
-        <div class="flex items-center justify-between font-semibold text-red-600 dark:text-red-400">
+      <div v-if="tabErrors.length > 0" class="mt-0.5 p-2 bg-rose-50/80 dark:bg-rose-500/10 border border-rose-200/70 dark:border-rose-500/20 rounded-xl text-xs flex flex-col gap-1.5">
+        <div class="flex items-center justify-between font-semibold text-rose-600 dark:text-rose-400 text-[11px]">
           <div class="flex items-center gap-1.5">
-            <Activity :size="14" />
+            <Activity :size="13" />
             <span>{{ t('popup.failedRequests') }}</span>
           </div>
-          <UiBadge variant="destructive" size="sm" class="px-1.5 py-0 text-[10px] font-bold">
+          <UiBadge variant="destructive" size="sm" class="px-1 py-0 text-[9px] font-bold">
             {{ tabErrors.length }}
           </UiBadge>
         </div>
-        <TransitionGroup name="list" tag="div" class="flex flex-col gap-1.5">
-          <div v-for="err in tabErrors.slice(0, 3)" :key="err.host" class="flex justify-between items-center gap-2">
-            <span class="truncate text-slate-600 dark:text-slate-400 text-[11px] font-mono" :title="err.url">{{ err.host }}</span>
+        <TransitionGroup name="list" tag="div" class="flex flex-col gap-1">
+          <div v-for="err in tabErrors.slice(0, 3)" :key="err.host" class="flex justify-between items-center gap-1.5">
+            <span class="truncate text-slate-600 dark:text-slate-400 text-[10px] font-mono" :title="err.url">{{ err.host }}</span>
             <UiButton
               variant="destructive"
               size="sm"
-              class="h-6 px-2 text-[10px] shrink-0"
+              class="h-5 px-1.5 text-[9px] shrink-0"
               :disabled="addingRule"
               @click="addQuickRule(err.host)"
             >
@@ -294,13 +326,17 @@ onUnmounted(() => {
       </div>
     </Transition>
 
-    <!-- Footer Quick Link -->
-    <footer class="pt-1.5 border-t border-slate-200/60 dark:border-white/5 flex justify-end items-center text-[10px] text-slate-400 dark:text-slate-500">
+    <!-- Footer -->
+    <footer class="pt-1.5 border-t border-slate-100 dark:border-white/5 flex items-center justify-between text-[10px] text-slate-400 dark:text-slate-500 px-0.5">
+      <div class="flex items-center gap-1 text-slate-400 dark:text-slate-500 font-medium">
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-xs shadow-emerald-500/50" />
+        <span>{{ t('common.ready') }}</span>
+      </div>
       <button
         class="hover:text-blue-600 dark:hover:text-blue-400 flex items-center gap-0.5 cursor-pointer transition-colors"
         @click="openOptions"
       >
-        {{ t('options.brandSub') }}
+        <span>{{ t('options.brandSub') }}</span>
         <ArrowUpRight :size="11" />
       </button>
     </footer>
