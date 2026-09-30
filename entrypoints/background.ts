@@ -193,12 +193,14 @@ export default defineBackground(() => {
       }
 
       const latency = Math.round(performance.now() - startTime);
+      const durationSec = Number(((performance.now() - startTime) / 1000).toFixed(2));
       return {
         success: true,
         latency,
         speedMBps,
         speedMbps,
         totalBytes,
+        durationSec,
         mode,
         status: res.status,
         statusText: res.statusText,
