@@ -682,18 +682,6 @@ onUnmounted(() => {
             </div>
             <div class="flex items-center gap-2.5 self-end sm:self-auto shrink-0">
               <UiButton
-                v-if="fixedProfile"
-                type="button"
-                variant="outline"
-                size="sm"
-                :loading="isTestingSpeed"
-                class="flex items-center gap-1.5"
-                @click="runSpeedTest"
-              >
-                <Zap :size="13" />
-                {{ isTestingSpeed ? t('options.testingSpeed') : t('options.testSpeed') }}
-              </UiButton>
-              <UiButton
                 v-if="!['direct', 'system'].includes(activeProfileView.id)"
                 variant="destructive"
                 @click="promptDeleteProfile(activeProfileView.id)"
