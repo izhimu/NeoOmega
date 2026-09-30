@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue';
-import { Settings, Check, Activity, ArrowUpRight, Globe } from 'lucide-vue-next';
+import { Settings, Activity, ArrowUpRight, Globe } from 'lucide-vue-next';
 import { getSettings } from '../../src/core/storage/storage';
 import type { AppSettings, TabNetworkError } from '../../src/core/types';
 import { useI18n, resolveLocale } from '../../src/core/i18n';
@@ -276,19 +276,13 @@ onUnmounted(() => {
       <div
         v-for="id in (settings.order || [])"
         :key="id"
-        class="group flex items-center justify-between px-3 py-2.5 min-h-[38px] rounded-xl cursor-pointer transition-all duration-150 relative overflow-hidden"
+        class="group flex items-center justify-between px-3 py-2.5 min-h-[38px] rounded-xl cursor-pointer transition-all duration-150"
         :class="settings.activeProfileId === id
           ? 'bg-blue-50/90 dark:bg-blue-500/15 border border-blue-500/40 dark:border-blue-400/40 text-blue-900 dark:text-blue-100 font-semibold shadow-xs'
           : 'bg-white dark:bg-slate-900/60 border border-slate-200/70 dark:border-white/5 text-slate-700 dark:text-slate-300 hover:bg-slate-100/80 dark:hover:bg-slate-800/70 hover:border-slate-300 dark:hover:border-white/15'"
         @click="switchProfile(id)"
       >
-        <!-- Active Left Indicator Bar -->
-        <span
-          v-if="settings.activeProfileId === id"
-          class="absolute left-0 top-2 bottom-2 w-1 bg-blue-600 dark:bg-blue-400 rounded-r-full"
-        />
-
-        <div class="flex items-center gap-2.5 min-w-0 pl-1">
+        <div class="flex items-center gap-2.5 min-w-0">
           <span
             class="w-2.5 h-2.5 rounded-full shrink-0 shadow-xs ring-2 ring-white dark:ring-slate-900 transition-transform group-hover:scale-125"
             :style="{ backgroundColor: settings.profiles[id]?.color || '#64748b' }"
@@ -321,16 +315,6 @@ onUnmounted(() => {
           >
             {{ t('common.auto') }}
           </span>
-
-          <!-- Prominent Checkmark Badge Slot -->
-          <div class="w-5 h-5 flex items-center justify-center shrink-0">
-            <div
-              v-if="settings.activeProfileId === id"
-              class="w-4 h-4 rounded-full bg-blue-600 dark:bg-blue-500 text-white flex items-center justify-center shadow-xs"
-            >
-              <Check :size="10" class="stroke-[3]" />
-            </div>
-          </div>
         </div>
       </div>
     </div>
