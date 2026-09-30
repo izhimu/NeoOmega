@@ -124,6 +124,8 @@ export interface AppSettings {
   language?: 'auto' | 'zh_CN' | 'en';
   enableErrorMonitoring: boolean;
   ruleListUpdateInterval?: number; // minutes, default 120
+  enableCloudSync?: boolean; // mirror profiles into chrome.storage.sync
+  settingsUpdatedAt?: number; // ms epoch, last-write-wins for sync
   syncConfig?: {
     type: 'none' | 'webdav' | 'gist';
     url?: string;

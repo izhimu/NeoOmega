@@ -23,6 +23,7 @@ import {
   Zap,
   Gauge,
   RefreshCw,
+  Cloud,
 } from 'lucide-vue-next';
 import { Toaster, toast } from 'vue-sonner';
 import { decodeRuleListText } from '../../src/core/parsers/autoproxy';
@@ -1418,6 +1419,23 @@ onUnmounted(() => {
               :model-value="settings.ruleListUpdateInterval ?? 120"
               @update:model-value="settings.ruleListUpdateInterval = Math.max(15, Number($event) || 120); saveCurrentSettings()"
             />
+          </div>
+
+          <div class="p-5 sm:p-6 bg-slate-50/60 dark:bg-slate-950/60 border border-slate-200/80 dark:border-white/10 rounded-2xl sm:rounded-3xl flex flex-col gap-3 shadow-xs">
+            <h3 class="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <Cloud :size="16" class="text-sky-600 dark:text-sky-400" />
+              {{ t('options.cloudSyncTitle') }}
+            </h3>
+            <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('options.cloudSyncDesc') }}</p>
+            <label class="flex items-center gap-2 cursor-pointer text-sm text-slate-700 dark:text-slate-300">
+              <input
+                type="checkbox"
+                :checked="settings.enableCloudSync"
+                class="accent-indigo-600 w-4 h-4"
+                @change="settings.enableCloudSync = ($event.target as HTMLInputElement).checked; saveCurrentSettings()"
+              />
+              {{ t('options.cloudSyncTitle') }}
+            </label>
           </div>
         </div>
 

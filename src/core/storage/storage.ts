@@ -110,6 +110,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   language: 'auto',
   enableErrorMonitoring: true,
   ruleListUpdateInterval: 120,
+  enableCloudSync: false,
 };
 
 const STORAGE_KEY = 'neo_omega_settings';
@@ -152,8 +153,70 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
   if (typeof chrome === 'undefined' || !chrome.storage?.local) {
     return;
   }
-  const plain = JSON.parse(JSON.stringify(settings));
+  const plain = JSON.parse(JSON.stringify(settings)) as AppSettings;
+  plain.settingsUpdatedAt = Date.now();
   await chrome.storage.local.set({ [STORAGE_KEY]: plain });
+  void pushSettingsToSync(plain);
+}
+
+const SYNC_META = 'neo_omega_sync_meta';
+const SYNC_CHUNK = 'neo_omega_sync_';
+const SYNC_CHUNK_SIZE = 6000; // sync quota: 8192 B/item
+
+/** Strip bulky rule caches; sync quota is 100KB total */
+function stripForSync(settings: AppSettings): AppSettings {
+  const plain = JSON.parse(JSON.stringify(settings)) as AppSettings;
+  for (const p of Object.values(plain.profiles ?? {})) {
+    if (p.profileType === 'SwitchProfile' && p.ruleList) {
+      delete p.ruleList.rulesCache;
+    }
+  }
+  return plain;
+}
+
+/** Push settings to chrome.storage.sync (chunked). Best-effort: logs, never throws. */
+export async function pushSettingsToSync(settings: AppSettings): Promise<void> {
+  if (typeof chrome === 'undefined' || !chrome.storage?.sync || !settings.enableCloudSync) return;
+  try {
+    const text = JSON.stringify(stripForSync(settings));
+    const chunks: string[] = [];
+    for (let i = 0; i < text.length; i += SYNC_CHUNK_SIZE) {
+      chunks.push(text.slice(i, i + SYNC_CHUNK_SIZE));
+    }
+    const items: Record<string, unknown> = {
+      [SYNC_META]: { chunks: chunks.length, updatedAt: settings.settingsUpdatedAt ?? 0 },
+    };
+    chunks.forEach((c, i) => { items[`${SYNC_CHUNK}${i}`] = c; });
+    await chrome.storage.sync.set(items);
+  } catch (err) {
+    console.warn('[NeoOmega] sync push failed:', err);
+  }
+}
+
+/** Pull settings from chrome.storage.sync; null when absent or stale. */
+export async function pullSettingsFromSync(): Promise<AppSettings | null> {
+  if (typeof chrome === 'undefined' || !chrome.storage?.sync) return null;
+  const metaRes = await chrome.storage.sync.get(SYNC_META);
+  const meta = metaRes[SYNC_META] as { chunks: number; updatedAt: number } | undefined;
+  if (!meta || meta.chunks <= 0) return null;
+  const local = await getSettings();
+  if ((local.settingsUpdatedAt ?? 0) >= meta.updatedAt) return null;
+  const keys = Array.from({ length: meta.chunks }, (_, i) => `${SYNC_CHUNK}${i}`);
+  const chunkRes = await chrome.storage.sync.get(keys);
+  const text = keys.map((k) => (chunkRes[k] as string | undefined) ?? '').join('');
+  try {
+    return JSON.parse(text) as AppSettings;
+  } catch {
+    return null;
+  }
+}
+
+/** Adopt remote sync settings into local storage (no sync re-push). Returns true when adopted. */
+export async function adoptSyncSettings(): Promise<boolean> {
+  const remote = await pullSettingsFromSync();
+  if (!remote?.profiles) return false;
+  await chrome.storage.local.set({ [STORAGE_KEY]: remote });
+  return true;
 }
 
 export async function getActiveProfile(): Promise<Profile> {

@@ -96,6 +96,40 @@ const filteredRequests = computed(() => {
     return true;
   });
 });
+interface AggregatedHostError {
+  host: string;
+  count: number;
+  lastError: string;
+}
+
+const aggregatedFailedHosts = computed<AggregatedHostError[]>(() => {
+  const map = new Map<string, { count: number; lastError: string; latestTimestamp: number }>();
+  for (const err of errors.value) {
+    if (!err.host) continue;
+    const existing = map.get(err.host);
+    const ts = err.timestamp || 0;
+    if (!existing) {
+      map.set(err.host, {
+        count: 1,
+        lastError: err.error || '',
+        latestTimestamp: ts,
+      });
+    } else {
+      existing.count += 1;
+      if (ts >= existing.latestTimestamp) {
+        existing.lastError = err.error || existing.lastError;
+        existing.latestTimestamp = ts;
+      }
+    }
+  }
+  return Array.from(map.entries())
+    .map(([host, val]) => ({
+      host,
+      count: val.count,
+      lastError: val.lastError,
+    }))
+    .sort((a, b) => b.count - a.count);
+});
 
 const addQuickRule = (host: string) => {
   if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) return;
@@ -264,6 +298,54 @@ onUnmounted(() => {
 
     <!-- Request List -->
     <div class="flex-1 overflow-y-auto px-4 pb-4 flex flex-col gap-2">
+      <!-- Failed Hosts Aggregation -->
+      <div class="p-3 bg-white dark:bg-slate-900/70 border border-slate-200/80 dark:border-white/10 rounded-2xl shadow-xs flex flex-col gap-2">
+        <div class="flex justify-between items-center">
+          <span class="text-xs font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+            <Shield :size="13" class="text-red-500" />
+            {{ t('sidepanel.failedHosts') }}
+          </span>
+          <UiBadge v-if="aggregatedFailedHosts.length > 0" variant="destructive" size="sm" class="px-1.5 py-0 text-[10px] bg-red-100 dark:bg-red-900/60 text-red-700 dark:text-red-200 border-none font-bold">
+            {{ aggregatedFailedHosts.length }}
+          </UiBadge>
+        </div>
+
+        <div v-if="aggregatedFailedHosts.length === 0" class="text-center text-slate-400 dark:text-slate-500 py-2 text-xs">
+          {{ t('sidepanel.noFailedHosts') }}
+        </div>
+
+        <div v-else class="flex flex-col gap-1.5">
+          <div
+            v-for="item in aggregatedFailedHosts"
+            :key="item.host"
+            class="flex items-center justify-between p-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 text-xs"
+          >
+            <div class="flex flex-col min-w-0 pr-2">
+              <div class="flex items-center gap-1.5">
+                <span class="font-mono font-medium text-slate-800 dark:text-slate-200 truncate text-[11px]" :title="item.host">
+                  {{ item.host }}
+                </span>
+                <UiBadge variant="destructive" size="sm" class="px-1.5 py-0 text-[10px] bg-red-100 dark:bg-red-900/60 text-red-700 dark:text-red-200 border-none font-bold shrink-0">
+                  {{ item.count }}
+                </UiBadge>
+              </div>
+              <span v-if="item.lastError" class="text-[10px] text-red-500 dark:text-red-400 font-mono truncate" :title="item.lastError">
+                {{ item.lastError.replace('net::', '') }}
+              </span>
+            </div>
+            <UiButton
+              variant="outline"
+              size="sm"
+              class="h-6 px-2.5 text-[10px] text-blue-600 dark:text-blue-400 hover:text-blue-700 hover:bg-blue-50 dark:hover:bg-blue-500/10 border-blue-200 dark:border-blue-500/30 shrink-0"
+              :title="t('sidepanel.quickRuleTooltip')"
+              @click="addQuickRule(item.host)"
+            >
+              <Plus :size="11" />
+              {{ t('sidepanel.quickRule') }}
+            </UiButton>
+          </div>
+        </div>
+      </div>
       <div v-if="filteredRequests.length === 0" class="text-center text-slate-400 dark:text-slate-500 py-16 flex flex-col items-center justify-center">
         <div class="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-white/5 flex items-center justify-center mb-3">
           <Radio :size="24" class="opacity-40" />

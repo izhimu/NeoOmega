@@ -2,7 +2,7 @@ import { fetchAndParseRuleList } from '../src/core/parsers/autoproxy';
 import { initAuthManager, setTempProxyCredentials, clearTempProxyCredentials } from '../src/core/proxy/auth-manager';
 import { generateTestPacScript } from '../src/core/pac/generator';
 import { ProxyManager } from '../src/core/proxy/proxy-manager';
-import { getSettings, saveSettings, setActiveProfileId } from '../src/core/storage/storage';
+import { getSettings, saveSettings, setActiveProfileId, adoptSyncSettings } from '../src/core/storage/storage';
 import type { AppSettings, ProxyServer, SwitchProfile, TabNetworkError, TabRequestLog } from '../src/core/types';
 
 export default defineBackground(() => {
@@ -13,6 +13,9 @@ export default defineBackground(() => {
 
   const init = async () => {
     try {
+      // Newer settings on another device? Adopt before applying proxy.
+      const adopted = await adoptSyncSettings();
+      if (adopted) console.log('[NeoOmega] Adopted settings from cloud sync');
       await ProxyManager.applyCurrentActive();
     } catch (err) {
       console.error('[NeoOmega] Failed to apply proxy on startup:', err);
@@ -342,6 +345,16 @@ export default defineBackground(() => {
       chrome.alarms.create('neo_omega_update_rules', { periodInMinutes: Math.max(15, newIv) });
     }
     syncWebRequestListeners();
+  });
+
+  // Cloud sync: remote settings changed on another device → adopt if newer
+  chrome.storage?.onChanged?.addListener((changes, area) => {
+    if (area !== 'sync' || !changes['neo_omega_sync_meta']) return;
+    adoptSyncSettings()
+      .then(async (adopted) => {
+        if (adopted) await ProxyManager.applyCurrentActive();
+      })
+      .catch((err) => console.warn('[NeoOmega] sync adopt failed:', err));
   });
 
   // Clean up tab error and request cache on tab close
