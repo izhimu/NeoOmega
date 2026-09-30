@@ -21,8 +21,8 @@ const errors = ref<TabNetworkError[]>([]);
 const filterType = ref<'all' | 'errors' | 'xhr'>('all');
 const searchQuery = ref<string>('');
 const { t, setLocale, getProfileDisplayName } = useI18n();
-let pollTimer: number | null = null;
 let cleanThemeListener: (() => void) | null = null;
+let port: chrome.runtime.Port | null = null;
 
 const activeProfile = computed<Profile | null>(() => {
   if (!settings.value) return null;
@@ -43,35 +43,40 @@ const loadCurrentTab = async () => {
       } catch {
         currentTabHost.value = '';
       }
-      fetchData();
+      subscribe();
     }
   } catch (err) {
     console.error('Failed to query active tab:', err);
   }
 };
 
-const fetchData = () => {
-  if (currentTabId.value <= 0 || typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) return;
+// Push channel: background streams TAB_DATA while this port is open.
+// SW restart kills the port; reconnect resubscribes and gets a fresh snapshot.
+const subscribe = () => {
+  if (port && currentTabId.value > 0) {
+    port.postMessage({ type: 'SUBSCRIBE_TAB', tabId: currentTabId.value });
+  }
+};
 
-  // Heartbeat: keeps request monitoring alive across service worker restarts
-  chrome.runtime.sendMessage({ type: 'START_TAB_MONITOR' });
-  chrome.runtime.sendMessage(
-    { type: 'GET_TAB_REQUESTS', tabId: currentTabId.value },
-    (res) => {
-      if (res && res.requests) {
-        requests.value = res.requests;
-      }
+const connectPort = () => {
+  if (typeof chrome === 'undefined' || !chrome.runtime?.connect) return;
+  try {
+    port = chrome.runtime.connect({ name: 'sidepanel' });
+  } catch {
+    port = null;
+    return;
+  }
+  port.onMessage.addListener((msg: { type?: string; requests?: TabRequestLog[]; errors?: TabNetworkError[] }) => {
+    if (msg?.type === 'TAB_DATA') {
+      requests.value = msg.requests || [];
+      errors.value = msg.errors || [];
     }
-  );
-
-  chrome.runtime.sendMessage(
-    { type: 'GET_TAB_ERRORS', tabId: currentTabId.value },
-    (res) => {
-      if (res && res.errors) {
-        errors.value = res.errors;
-      }
-    }
-  );
+  });
+  port.onDisconnect.addListener(() => {
+    port = null;
+    window.setTimeout(connectPort, 300);
+  });
+  subscribe();
 };
 
 const refreshState = async () => {
@@ -138,7 +143,7 @@ const addQuickRule = (host: string) => {
     (res) => {
       if (res && res.success) {
         toast.success(`${t('popup.ruleAdded')}: *.${host}`);
-        fetchData();
+        // TAB_DATA push refreshes the lists
       } else {
         toast.error(res?.error || t('popup.addRuleFailed'));
       }
@@ -171,17 +176,16 @@ const openOptions = async () => {
 };
 
 onMounted(() => {
-  chrome.runtime?.sendMessage?.({ type: 'START_TAB_MONITOR' });
+  connectPort();
   refreshState();
   document.title = `${t('sidepanel.title')} - ${t('sidepanel.subtitle')}`;
-  pollTimer = window.setInterval(fetchData, 2000);
   cleanThemeListener = initThemeListener(() => settings.value?.theme);
 });
 
 onUnmounted(() => {
-  if (pollTimer) clearInterval(pollTimer);
   if (cleanThemeListener) cleanThemeListener();
-  chrome.runtime?.sendMessage?.({ type: 'STOP_TAB_MONITOR' });
+  port?.disconnect();
+  port = null;
 });
 </script>
 

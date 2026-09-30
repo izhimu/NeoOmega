@@ -273,6 +273,7 @@ export default defineBackground(() => {
       });
       if (reqs.length > 80) reqs.length = 80;
       tabRequests.set(details.tabId, reqs);
+      broadcastTab(details.tabId);
     } catch {
       // ignore invalid URLs
     }
@@ -306,8 +307,30 @@ export default defineBackground(() => {
       });
       if (reqs.length > 80) reqs.length = 80;
       tabRequests.set(details.tabId, reqs);
+      broadcastTab(details.tabId);
     } catch {
       // ignore invalid URLs
+    }
+  };
+
+  // Side Panel push channel: one long-lived port per open panel. Port open =
+  // monitoring on; disconnect (panel close or SW restart) = off. The panel
+  // reconnects after SW restart, replacing the old 2s heartbeat poll.
+  const portTab = new Map<chrome.runtime.Port, number>();
+  const pushTabData = (port: chrome.runtime.Port, tabId: number) => {
+    try {
+      port.postMessage({
+        type: 'TAB_DATA',
+        requests: tabRequests.get(tabId) || [],
+        errors: tabErrors.get(tabId) || [],
+      });
+    } catch {
+      // port already dying
+    }
+  };
+  const broadcastTab = (tabId: number) => {
+    for (const [port, id] of portTab) {
+      if (id === tabId) pushTabData(port, tabId);
     }
   };
 
@@ -327,6 +350,26 @@ export default defineBackground(() => {
       chrome.webRequest.onErrorOccurred.removeListener(onErrorListener);
     }
   };
+
+  chrome.runtime.onConnect.addListener((port) => {
+    if (port.name !== 'sidepanel') return;
+    portTab.set(port, 0);
+    requestLogOn = true;
+    syncWebRequestListeners();
+    port.onMessage.addListener((msg: { type?: string; tabId?: number }) => {
+      if (msg?.type !== 'SUBSCRIBE_TAB' || typeof msg.tabId !== 'number') return;
+      portTab.set(port, msg.tabId);
+      pushTabData(port, msg.tabId);
+    });
+    port.onDisconnect.addListener(() => {
+      portTab.delete(port);
+      if (portTab.size === 0) {
+        requestLogOn = false;
+        tabRequests.clear();
+        syncWebRequestListeners();
+      }
+    });
+  });
 
   getSettings()
     .then((s) => {
@@ -370,26 +413,6 @@ export default defineBackground(() => {
       return false;
     }
 
-    if (message.type === 'GET_TAB_REQUESTS') {
-      const requests = tabRequests.get(message.tabId) || [];
-      sendResponse({ requests });
-      return false;
-    }
-
-    if (message.type === 'START_TAB_MONITOR') {
-      requestLogOn = true;
-      syncWebRequestListeners();
-      sendResponse({ success: true });
-      return false;
-    }
-
-    if (message.type === 'STOP_TAB_MONITOR') {
-      requestLogOn = false;
-      tabRequests.clear();
-      syncWebRequestListeners();
-      sendResponse({ success: true });
-      return false;
-    }
 
     if (message.type === 'SWITCH_PROFILE') {
       (async () => {
