@@ -331,14 +331,20 @@ const runSpeedTest = async () => {
     return;
   }
   isTestingSpeed.value = true;
+  const proxyPayload = JSON.parse(JSON.stringify(fp.fallbackProxy));
   chrome.runtime.sendMessage(
     {
       type: 'TEST_PROXY',
-      proxy: fp.fallbackProxy,
+      proxy: proxyPayload,
       testUrl: speedTestTarget.value,
     },
     (res: any) => {
       isTestingSpeed.value = false;
+      if (chrome.runtime.lastError) {
+        console.error('Speed test runtime error:', chrome.runtime.lastError);
+        toast.error(`${t('options.speedTestFailed')}: ${chrome.runtime.lastError.message}`);
+        return;
+      }
       if (res) {
         speedTestResults.value[fp.id] = {
           ...res,
@@ -349,11 +355,12 @@ const runSpeedTest = async () => {
         } else {
           toast.error(`${t('options.speedTestFailed')}: ${res.error || 'Unknown error'}`);
         }
+      } else if (!chrome.runtime.lastError) {
+        toast.error(t('options.speedTestFailed'));
       }
     }
   );
 };
-
 // Bypass Pattern Management
 const updateProxyUsername = (val: string) => {
   const fp = fixedProfile.value;
@@ -676,6 +683,7 @@ onUnmounted(() => {
             <div class="flex items-center gap-2.5 self-end sm:self-auto shrink-0">
               <UiButton
                 v-if="fixedProfile"
+                type="button"
                 variant="outline"
                 size="sm"
                 :loading="isTestingSpeed"
@@ -811,6 +819,7 @@ onUnmounted(() => {
                 class="w-44 text-xs"
               />
               <UiButton
+                type="button"
                 variant="outline"
                 size="sm"
                 :loading="isTestingSpeed"

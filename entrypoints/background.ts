@@ -116,12 +116,23 @@ export default defineBackground(() => {
 
     const testPac = generateTestPacScript(proxy, targetHost, activeProfile, settings.profiles);
 
-    await chrome.proxy.settings.set({
-      value: {
-        mode: 'pac_script',
-        pacScript: { data: testPac, mandatory: true },
-      },
-      scope: 'regular',
+    await new Promise<void>((resolve, reject) => {
+      chrome.proxy.settings.set(
+        {
+          value: {
+            mode: 'pac_script',
+            pacScript: { data: testPac, mandatory: true },
+          },
+          scope: 'regular',
+        },
+        () => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+          } else {
+            resolve();
+          }
+        }
+      );
     });
 
     await new Promise((resolve) => setTimeout(resolve, 60));
@@ -162,11 +173,16 @@ export default defineBackground(() => {
       };
     } finally {
       clearTimeout(timeoutId);
-      clearTempProxyCredentials();
-      if (activeProfile) {
-        await ProxyManager.applyProfile(activeProfile, settings.profiles);
-      } else {
-        await chrome.proxy.settings.clear({ scope: 'regular' });
+      try {
+        if (activeProfile) {
+          await ProxyManager.applyProfile(activeProfile, settings.profiles);
+        } else {
+          await new Promise<void>((resolve) => {
+            chrome.proxy.settings.clear({ scope: 'regular' }, () => resolve());
+          });
+        }
+      } catch (cleanupErr) {
+        console.error('[NeoOmega] Failed to restore proxy after test:', cleanupErr);
       }
     }
   };
@@ -244,6 +260,18 @@ export default defineBackground(() => {
   });
   // Handle messages from Popup and Options
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.type === 'GET_TAB_ERRORS') {
+      const errors = tabErrors.get(message.tabId) || [];
+      sendResponse({ errors });
+      return false;
+    }
+
+    if (message.type === 'GET_TAB_REQUESTS') {
+      const requests = tabRequests.get(message.tabId) || [];
+      sendResponse({ requests });
+      return false;
+    }
+
     if (message.type === 'SWITCH_PROFILE') {
       (async () => {
         try {
@@ -261,17 +289,6 @@ export default defineBackground(() => {
       return true;
     }
 
-    if (message.type === 'GET_TAB_ERRORS') {
-      const errors = tabErrors.get(message.tabId) || [];
-      sendResponse({ errors });
-      return false;
-    }
-
-    if (message.type === 'GET_TAB_REQUESTS') {
-      const requests = tabRequests.get(message.tabId) || [];
-      sendResponse({ requests });
-      return false;
-    }
     if (message.type === 'ADD_HOST_RULE') {
       (async () => {
         try {
@@ -333,5 +350,7 @@ export default defineBackground(() => {
       })();
       return true;
     }
+
+    return false;
   });
 });
