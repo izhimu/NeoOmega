@@ -18,8 +18,8 @@
     "postinstall": "wxt prepare"
   },
   "dependencies": {
+    "@lucide/vue": "^1.49.0",
     "clsx": "^2.1.1",
-    "lucide-vue-next": "^0.475.0",
     "radix-vue": "^1.9.17",
     "tailwind-merge": "^3.7.0",
     "vue": "^3.5.29",
@@ -27,14 +27,14 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
-    "@types/chrome": "^0.3.3",
+    "@types/chrome": "^0.3.4",
     "@wxt-dev/module-vue": "^1.0.3",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.9.3",
-    "vite": "^8.1.5",
+    "vite": "^8.3.2",
     "vitest": "^3.0.7",
     "vue-tsc": "^3.2.5",
     "web-ext": "^10.5.0",
-    "wxt": "^0.21.3"
+    "wxt": "^0.21.4"
   }
 }

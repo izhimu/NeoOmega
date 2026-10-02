@@ -8,12 +8,12 @@ importers:
 
   .:
     dependencies:
+      '@lucide/vue':
+        specifier: ^1.49.0
+        version: 1.49.0(vue@3.5.43(typescript@5.9.3))
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
-      lucide-vue-next:
-        specifier: ^0.475.0
-        version: 0.475.0(vue@3.5.43(typescript@5.9.3))
       radix-vue:
         specifier: ^1.9.17
         version: 1.9.17(vue@3.5.43(typescript@5.9.3))
@@ -29,13 +29,13 @@ importers:
     devDependencies:
       '@tailwindcss/vite':
         specifier: ^4.3.3
-        version: 4.3.3(vite@8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))
+        version: 4.3.3(vite@8.3.2(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))
       '@types/chrome':
-        specifier: ^0.3.3
-        version: 0.3.3
+        specifier: ^0.3.4
+        version: 0.3.4
       '@wxt-dev/module-vue':
         specifier: ^1.0.3
-        version: 1.0.3(vite@8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))(vue@3.5.43(typescript@5.9.3))(wxt@0.21.4(esbuild@0.28.2)(eslint@9.39.4(jiti@2.7.0))(rolldown@1.2.11)(rollup@4.63.5)(typescript@5.9.3)(vite@8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))(web-ext@10.7.0(jiti@2.7.0)))
+        version: 1.0.3(vite@8.3.2(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))(vue@3.5.43(typescript@5.9.3))(wxt@0.21.4(esbuild@0.28.2)(eslint@9.39.4(jiti@2.7.0))(rolldown@1.2.11)(rollup@4.63.5)(typescript@5.9.3)(vite@8.3.2(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))(web-ext@10.7.0(jiti@2.7.0)))
       tailwindcss:
         specifier: ^4.3.3
         version: 4.3.3
@@ -43,8 +43,8 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
       vite:
-        specifier: ^8.1.5
-        version: 8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0)
+        specifier: ^8.3.2
+        version: 8.3.2(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0)
       vitest:
         specifier: ^3.0.7
         version: 3.2.7(@types/node@26.6.3)(happy-dom@20.14.5)(jiti@2.7.0)(lightningcss@1.33.0)
@@ -55,8 +55,8 @@ importers:
         specifier: ^10.5.0
         version: 10.7.0(jiti@2.7.0)
       wxt:
-        specifier: ^0.21.3
-        version: 0.21.4(esbuild@0.28.2)(eslint@9.39.4(jiti@2.7.0))(rolldown@1.2.11)(rollup@4.63.5)(typescript@5.9.3)(vite@8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))(web-ext@10.7.0(jiti@2.7.0))
+        specifier: ^0.21.4
+        version: 0.21.4(esbuild@0.28.2)(eslint@9.39.4(jiti@2.7.0))(rolldown@1.2.11)(rollup@4.63.5)(typescript@5.9.3)(vite@8.3.2(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))(web-ext@10.7.0(jiti@2.7.0))
 
 packages:
 
@@ -368,6 +368,11 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+
+  '@lucide/vue@1.49.0':
+    resolution: {integrity: sha512-7xS5gYnLoIx0jlmlRE3Rb71fIHaNqhVBiKMpOlqrYt6nMPy3C/62HJHo5XNsV3HTK+9l3M0hXICrIA7S5v6y5Q==}
+    peerDependencies:
+      vue: '>=3.0.1'
 
   '@mdn/browser-compat-data@8.1.0':
     resolution: {integrity: sha512-BNlUjp+9O6gtIHPVZEGFb5rgtuWW8weR+mSKfLOevxbfoZv5DRe3N4ZTEpXiIm5wfR7+kqHu8malCCgP6USrlg==}
@@ -722,8 +727,8 @@ packages:
   '@types/chai@5.2.3':
     resolution: {integrity: sha512-Mw558oeA9fFbv65/y4mHtXDs9bPnFMZAL/jxdPFUpOHHIXX91mcgEHbS5Lahr+pwZFR8A7GQleRWeI6cGFC2UA==}
 
-  '@types/chrome@0.3.3':
-    resolution: {integrity: sha512-XdJPtwgZs4k8xN+YpSzruqNxmKtEb4sBDtFarj1H7bPmZTSidyk/QkFu4swksTs28JmW5IuxuL7gMeEswm3Hfg==}
+  '@types/chrome@0.3.4':
+    resolution: {integrity: sha512-dcySM5R3WAUVYFjylu6tvI4D03hPKjgAqk+tKZ/tm/vxL4mLgbnSsOEQ3J7V99qP/U3Oo9IORstJLmX2hPaDlA==}
 
   '@types/deep-eql@4.0.2':
     resolution: {integrity: sha512-c9h9dVVMigMPc4bwTvC5dxqtqJZwQPePsWjPlpSOnojbor6pGqdk541lfA7AqFQr5pB1BRdq0juY9db81BwyFw==}
@@ -755,8 +760,8 @@ packages:
   '@types/whatwg-mimetype@3.0.2':
     resolution: {integrity: sha512-c2AKvDT8ToxLIOUlN51gTiHXflsfIFisS4pO7pDPoKouJCESkhZnEy623gwP9laCy5lnLDAw1vAzu2vM2YLOrA==}
 
-  '@types/ws@8.18.1':
-    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
+  '@types/ws@8.18.2':
+    resolution: {integrity: sha512-67MQl+fpWKVTT1NYdnmo3U4sc/xPo/zQBncVnI74qmQa0z/b+1g6iYqNmGCPbxO+zz2aklb08a0oHfegiVd0/w==}
 
   '@vitejs/plugin-vue@6.0.9':
     resolution: {integrity: sha512-rD/MORlhaZMlXWW0rEn4FB4wMinWC0z/D7Ye160S5+Rs1mC8ZDAdcDp4SjKfUhG5t8q1ktcPVw4xuTkPRlzrSA==}
@@ -1877,12 +1882,6 @@ packages:
   loupe@3.2.1:
     resolution: {integrity: sha512-CdzqowRJCeLU72bHvWqwRBBlLcMEtIvGrlvef74kMnV2AolS9Y8xUv1I0U/MNAWMhBlKIoyuEgoJ0t/bbwHbLQ==}
 
-  lucide-vue-next@0.475.0:
-    resolution: {integrity: sha512-xzotVZV7en58Gm3b60YHlxX2YGlFWSN4D5VMMhU/rC9D/pkeRqve21TPMJdHQsdqFdoRthnaB2HrzL0PQXdNeA==}
-    deprecated: Package deprecated. Please use @lucide/vue instead.
-    peerDependencies:
-      vue: '>=3.0.1'
-
   magic-string@0.30.21:
     resolution: {integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==}
 
@@ -2497,8 +2496,8 @@ packages:
       yaml:
         optional: true
 
-  vite@8.3.1:
-    resolution: {integrity: sha512-/bvH9E9tmCXRGp2uXY3WbOldqpTwFkbha/8ANaEQ6VkxhH60KyqLwgZq6lG2y+4uT55x9+9eUHMpQ7uGnOCKjA==}
+  vite@8.3.2:
+    resolution: {integrity: sha512-SQr1x6W5vVSbROg7vsyXIaxK9b0G7zsT68acdWWRmnBUsgDieLCRG+Rep9WdZgcposvv/GSnr4GUUBqB3vXq6w==}
     engines: {node: ^20.19.0 || >=22.12.0}
     hasBin: true
     peerDependencies:
@@ -2993,6 +2992,10 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
 
+  '@lucide/vue@1.49.0(vue@3.5.43(typescript@5.9.3))':
+    dependencies:
+      vue: 3.5.43(typescript@5.9.3)
+
   '@mdn/browser-compat-data@8.1.0': {}
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
@@ -3201,12 +3204,12 @@ snapshots:
       '@tailwindcss/oxide-win32-arm64-msvc': 4.3.3
       '@tailwindcss/oxide-win32-x64-msvc': 4.3.3
 
-  '@tailwindcss/vite@4.3.3(vite@8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))':
+  '@tailwindcss/vite@4.3.3(vite@8.3.2(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))':
     dependencies:
       '@tailwindcss/node': 4.3.3
       '@tailwindcss/oxide': 4.3.3
       tailwindcss: 4.3.3
-      vite: 8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0)
+      vite: 8.3.2(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0)
 
   '@tanstack/virtual-core@3.17.11': {}
 
@@ -3222,7 +3225,7 @@ snapshots:
       '@types/deep-eql': 4.0.2
       assertion-error: 2.0.1
 
-  '@types/chrome@0.3.3':
+  '@types/chrome@0.3.4':
     dependencies:
       '@types/filesystem': 0.0.36
       '@types/har-format': 1.2.16
@@ -3252,15 +3255,15 @@ snapshots:
   '@types/whatwg-mimetype@3.0.2':
     optional: true
 
-  '@types/ws@8.18.1':
+  '@types/ws@8.18.2':
     dependencies:
       '@types/node': 26.6.3
     optional: true
 
-  '@vitejs/plugin-vue@6.0.9(vite@8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))(vue@3.5.43(typescript@5.9.3))':
+  '@vitejs/plugin-vue@6.0.9(vite@8.3.2(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))(vue@3.5.43(typescript@5.9.3))':
     dependencies:
       '@rolldown/pluginutils': 1.0.1
-      vite: 8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0)
+      vite: 8.3.2(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0)
       vue: 3.5.43(typescript@5.9.3)
 
   '@vitest/expect@3.2.7':
@@ -3416,10 +3419,10 @@ snapshots:
       '@types/filesystem': 0.0.36
       '@types/har-format': 1.2.16
 
-  '@wxt-dev/module-vue@1.0.3(vite@8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))(vue@3.5.43(typescript@5.9.3))(wxt@0.21.4(esbuild@0.28.2)(eslint@9.39.4(jiti@2.7.0))(rolldown@1.2.11)(rollup@4.63.5)(typescript@5.9.3)(vite@8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))(web-ext@10.7.0(jiti@2.7.0)))':
+  '@wxt-dev/module-vue@1.0.3(vite@8.3.2(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))(vue@3.5.43(typescript@5.9.3))(wxt@0.21.4(esbuild@0.28.2)(eslint@9.39.4(jiti@2.7.0))(rolldown@1.2.11)(rollup@4.63.5)(typescript@5.9.3)(vite@8.3.2(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))(web-ext@10.7.0(jiti@2.7.0)))':
     dependencies:
-      '@vitejs/plugin-vue': 6.0.9(vite@8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))(vue@3.5.43(typescript@5.9.3))
-      wxt: 0.21.4(esbuild@0.28.2)(eslint@9.39.4(jiti@2.7.0))(rolldown@1.2.11)(rollup@4.63.5)(typescript@5.9.3)(vite@8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))(web-ext@10.7.0(jiti@2.7.0))
+      '@vitejs/plugin-vue': 6.0.9(vite@8.3.2(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))(vue@3.5.43(typescript@5.9.3))
+      wxt: 0.21.4(esbuild@0.28.2)(eslint@9.39.4(jiti@2.7.0))(rolldown@1.2.11)(rollup@4.63.5)(typescript@5.9.3)(vite@8.3.2(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))(web-ext@10.7.0(jiti@2.7.0))
     transitivePeerDependencies:
       - vite
       - vue
@@ -4067,7 +4070,7 @@ snapshots:
     dependencies:
       '@types/node': 26.6.3
       '@types/whatwg-mimetype': 3.0.2
-      '@types/ws': 8.18.1
+      '@types/ws': 8.18.2
       buffer-image-size: 0.6.4
       entities: 7.0.1
       whatwg-mimetype: 3.0.0
@@ -4395,10 +4398,6 @@ snapshots:
   lodash.once@4.1.1: {}
 
   loupe@3.2.1: {}
-
-  lucide-vue-next@0.475.0(vue@3.5.43(typescript@5.9.3)):
-    dependencies:
-      vue: 3.5.43(typescript@5.9.3)
 
   magic-string@0.30.21:
     dependencies:
@@ -4905,7 +4904,7 @@ snapshots:
 
   undici@7.30.0: {}
 
-  unimport@6.5.0(esbuild@0.28.2)(rolldown@1.2.11)(rollup@4.63.5)(vite@8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0)):
+  unimport@6.5.0(esbuild@0.28.2)(rolldown@1.2.11)(rollup@4.63.5)(vite@8.3.2(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0)):
     dependencies:
       acorn: 8.18.0
       escape-string-regexp: 5.0.0
@@ -4919,7 +4918,7 @@ snapshots:
       scule: 1.3.0
       strip-literal: 4.0.0
       tinyglobby: 0.2.17
-      unplugin: 3.4.0(esbuild@0.28.2)(rolldown@1.2.11)(rollup@4.63.5)(vite@8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))
+      unplugin: 3.4.0(esbuild@0.28.2)(rolldown@1.2.11)(rollup@4.63.5)(vite@8.3.2(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))
       unplugin-utils: 0.3.2
     optionalDependencies:
       rolldown: 1.2.11
@@ -4941,7 +4940,7 @@ snapshots:
       pathe: 2.0.3
       picomatch: 4.0.7
 
-  unplugin@3.4.0(esbuild@0.28.2)(rolldown@1.2.11)(rollup@4.63.5)(vite@8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0)):
+  unplugin@3.4.0(esbuild@0.28.2)(rolldown@1.2.11)(rollup@4.63.5)(vite@8.3.2(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0)):
     dependencies:
       '@jridgewell/remapping': 2.3.5
       picomatch: 4.0.7
@@ -4950,7 +4949,7 @@ snapshots:
       esbuild: 0.28.2
       rolldown: 1.2.11
       rollup: 4.63.5
-      vite: 8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0)
+      vite: 8.3.2(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0)
 
   upath@3.0.8: {}
 
@@ -5008,7 +5007,7 @@ snapshots:
       jiti: 2.7.0
       lightningcss: 1.33.0
 
-  vite@8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0):
+  vite@8.3.2(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0):
     dependencies:
       lightningcss: 1.33.0
       picomatch: 4.0.7
@@ -5183,7 +5182,7 @@ snapshots:
       is-wsl: 3.1.1
       powershell-utils: 0.1.0
 
-  wxt@0.21.4(esbuild@0.28.2)(eslint@9.39.4(jiti@2.7.0))(rolldown@1.2.11)(rollup@4.63.5)(typescript@5.9.3)(vite@8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))(web-ext@10.7.0(jiti@2.7.0)):
+  wxt@0.21.4(esbuild@0.28.2)(eslint@9.39.4(jiti@2.7.0))(rolldown@1.2.11)(rollup@4.63.5)(typescript@5.9.3)(vite@8.3.2(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))(web-ext@10.7.0(jiti@2.7.0)):
     dependencies:
       '@1natsu/wait-element': 4.2.0
       '@aklinker1/rollup-plugin-visualizer': 5.12.0(rollup@4.63.5)
@@ -5213,8 +5212,8 @@ snapshots:
       tiny-open: 1.3.0
       tinyexec: 1.3.1
       tinyglobby: 0.2.17
-      unimport: 6.5.0(esbuild@0.28.2)(rolldown@1.2.11)(rollup@4.63.5)(vite@8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))
-      vite: 8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0)
+      unimport: 6.5.0(esbuild@0.28.2)(rolldown@1.2.11)(rollup@4.63.5)(vite@8.3.2(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0))
+      vite: 8.3.2(@types/node@26.6.3)(esbuild@0.28.2)(jiti@2.7.0)
     optionalDependencies:
       eslint: 9.39.4(jiti@2.7.0)
       typescript: 5.9.3

@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import {
   Settings,
   Trash2,
@@ -24,7 +24,14 @@ import {
   Gauge,
   RefreshCw,
   Cloud,
-} from 'lucide-vue-next';
+  Network,
+  Languages,
+  Shield,
+  Database,
+  Heart,
+  Info,
+} from '@lucide/vue';
+import { AFDIAN_URL, SPONSORS_JSON_URL } from '../../src/core/sponsors';
 import { Toaster, toast } from 'vue-sonner';
 import { decodeRuleListText } from '../../src/core/parsers/autoproxy';
 import { parseSwitchyOmegaBackup } from '../../src/core/parsers/switchyomega';
@@ -33,6 +40,8 @@ import { DEFAULT_SETTINGS, getSettings, normalizeBypassList, saveSettings } from
 import type { AppSettings, ConditionType, FixedProfile, Profile, SwitchProfile } from '../../src/core/types';
 import { useI18n, resolveLocale } from '../../src/core/i18n';
 import { applyTheme, initThemeListener } from '../../src/core/theme';
+import { classifyIp, fetchDnsServers, fetchExitInfo, fetchExitIps, gatherIceCandidatesFromWebPage } from '../../src/core/leak/leak-test';
+import type { DnsServerInfo, EchoResult, ExitInfo, IceCandidateInfo } from '../../src/core/leak/leak-test';
 
 import UiButton from '../../src/components/ui/UiButton.vue';
 import UiInput from '../../src/components/ui/UiInput.vue';
@@ -40,6 +49,8 @@ import UiSelect from '../../src/components/ui/UiSelect.vue';
 import UiSwitch from '../../src/components/ui/UiSwitch.vue';
 import UiDialog from '../../src/components/ui/UiDialog.vue';
 import UiConfirmDialog from '../../src/components/ui/UiConfirmDialog.vue';
+import GuideDialog from '../../src/components/GuideDialog.vue';
+import SponsorDialog from '../../src/components/SponsorDialog.vue';
 import UiBadge from '../../src/components/ui/UiBadge.vue';
 import AppLogo from '../../src/components/ui/AppLogo.vue';
 
@@ -48,6 +59,26 @@ const activeTab = ref<string>('profile:proxy'); // 'profile:<id>' | 'backup'
 const mobileMenuOpen = ref(false);
 const { t, setLocale, getProfileDisplayName } = useI18n();
 let cleanThemeListener: (() => void) | null = null;
+
+// First-run guide
+const showGuide = ref(false);
+const GUIDE_SEEN_KEY = 'neo_omega_guide_seen';
+const checkGuideSeen = async () => {
+  if (typeof chrome === 'undefined' || !chrome.storage?.local) return;
+  const res = await chrome.storage.local.get(GUIDE_SEEN_KEY);
+  if (!res?.[GUIDE_SEEN_KEY]) showGuide.value = true;
+};
+watch(showGuide, (v) => {
+  if (!v && typeof chrome !== 'undefined' && chrome.storage?.local) {
+    chrome.storage.local.set({ [GUIDE_SEEN_KEY]: true });
+  }
+});
+const openGuide = () => {
+  mobileMenuOpen.value = false;
+  showGuide.value = true;
+};
+
+const showSponsor = ref(false);
 
 const selectTab = (tab: string) => {
   activeTab.value = tab;
@@ -145,6 +176,50 @@ const changeLanguage = async (lang: 'auto' | 'zh_CN' | 'en') => {
   document.title = `${t('options.brand')} - ${t('options.brandSub')}`;
   toast.success(t('options.profileSaved'));
 };
+
+const toggleLanguage = () => {
+  const current = resolveLocale(settings.value.language || 'auto');
+  changeLanguage(current === 'zh_CN' ? 'en' : 'zh_CN');
+};
+
+const leakRunning = ref(false);
+const leakRan = ref(false);
+const exitResults = ref<EchoResult[]>([]);
+const iceCandidates = ref<IceCandidateInfo[]>([]);
+const dnsServers = ref<DnsServerInfo[]>([]);
+const dnsError = ref<string>('');
+const exitInfo = ref<ExitInfo | undefined>(undefined);
+
+const runLeakTest = async () => {
+  if (leakRunning.value) return;
+  leakRunning.value = true;
+  leakRan.value = false;
+  try {
+    const [exits, ices, dns, country] = await Promise.all([
+      fetchExitIps(),
+      gatherIceCandidatesFromWebPage(),
+      fetchDnsServers().catch((e) => { dnsError.value = e instanceof Error ? e.message : String(e); return []; }),
+      fetchExitInfo(),
+    ]);
+    exitResults.value = exits;
+    iceCandidates.value = ices;
+    dnsServers.value = dns;
+    exitInfo.value = country;
+    leakRan.value = true;
+  } finally {
+    leakRunning.value = false;
+  }
+};
+
+const exitIps = computed(() => [...new Set(exitResults.value.map((r) => r.ip).filter((ip): ip is string => !!ip))]);
+const exitConsistent = computed(() => exitIps.value.length <= 1);
+const webRtcLeaked = computed(() =>
+  iceCandidates.value.some((c) => classifyIp(c.ip) === 'public' && !exitIps.value.includes(c.ip))
+);
+
+const dnsLeaked = computed(() =>
+  !!exitInfo.value?.countryCode && dnsServers.value.some((s) => s.country && s.country !== exitInfo.value?.countryCode)
+);
 
 const promptDeleteProfile = (id: string) => {
   if (['direct', 'system'].includes(id)) {
@@ -491,6 +566,41 @@ const removeFallbackServer = (idx: number) => {
 };
 
 // Backup Import / Export
+// One-time sponsor prompt after a successful backup import (gratitude peak).
+// ponytail: flag in storage.local; shown exactly once per install.
+const maybePromptSponsor = async () => {
+  if (typeof chrome === 'undefined' || !chrome.storage?.local) return;
+  const KEY = 'neo_omega_sponsor_prompted';
+  const stored = await chrome.storage.local.get(KEY);
+  if (stored?.[KEY]) return;
+  await chrome.storage.local.set({ [KEY]: true });
+  toast(t('options.sponsorThanks'), {
+    duration: 10000,
+    action: {
+      label: t('options.sponsorAction'),
+      onClick: () => window.open(AFDIAN_URL, '_blank'),
+    },
+  });
+};
+
+// Sponsor wall: public sponsors.json committed to the repo daily by CI. No token, silent fail.
+const sponsorWall = ref<{ names: string; more: number } | null>(null);
+onMounted(async () => {
+  try {
+    const res = await fetch(SPONSORS_JSON_URL);
+    if (!res.ok) return;
+    const data = await res.json();
+    const list = (data?.sponsors || []) as { name: string }[];
+    if (!list.length) return;
+    sponsorWall.value = {
+      names: list.slice(0, 5).map((s) => s.name).join(' · '),
+      more: Math.max(0, list.length - 5),
+    };
+  } catch {
+    // offline / placeholder URL — wall stays hidden
+  }
+});
+const fileInput = ref<HTMLInputElement | null>(null);
 const handleFileImport = async (e: Event) => {
   const target = e.target as HTMLInputElement;
   const file = target.files?.[0];
@@ -503,6 +613,7 @@ const handleFileImport = async (e: Event) => {
       const imported = parseSwitchyOmegaBackup(text);
       settings.value = imported;
       await saveCurrentSettings();
+      maybePromptSponsor();
       toast.success(t('options.importSuccess'));
       activeTab.value = `profile:${imported.order[0]}`;
     } catch (err: unknown) {
@@ -511,6 +622,7 @@ const handleFileImport = async (e: Event) => {
     }
   };
   reader.readAsText(file);
+  target.value = ''; // allow re-importing the same file
 };
 
 const exportBackup = () => {
@@ -581,6 +693,12 @@ const themeOptions = computed(() => [
   { value: 'dark', label: t('options.themeDark') },
 ]);
 
+const webRtcOptions = computed(() => [
+  { value: 'default', label: t('options.webRtcDefault') },
+  { value: 'default_public_interface_only', label: t('options.webRtcPublicOnly') },
+  { value: 'disable_non_proxied_udp', label: t('options.webRtcDisableUdp') },
+]);
+
 const profileTypeOptions = computed(() => [
   { value: 'FixedProfile', label: t('options.fixedType') },
   { value: 'SwitchProfile', label: t('options.switchType') },
@@ -588,6 +706,7 @@ const profileTypeOptions = computed(() => [
 
 onMounted(() => {
   loadSettings();
+  checkGuideSeen();
   cleanThemeListener = initThemeListener(() => settings.value?.theme);
   document.title = `${t('options.brand')} - ${t('options.brandSub')}`;
 });
@@ -646,13 +765,23 @@ onUnmounted(() => {
             <span class="text-[11px] text-slate-400 dark:text-slate-500 font-medium">{{ t('options.brandSub') }}</span>
           </div>
         </div>
-        <button
-          type="button"
-          class="md:hidden p-1.5 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/5 transition-colors cursor-pointer"
-          @click="mobileMenuOpen = false"
-        >
-          <X :size="18" />
-        </button>
+        <div class="flex items-center gap-1">
+          <button
+            type="button"
+            :title="t('options.guideNav')"
+            class="p-1.5 rounded-xl text-slate-400/80 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5 transition-colors cursor-pointer"
+            @click="openGuide"
+          >
+            <Info :size="15" />
+          </button>
+          <button
+            type="button"
+            class="md:hidden p-1.5 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/5 transition-colors cursor-pointer"
+            @click="mobileMenuOpen = false"
+          >
+            <X :size="18" />
+          </button>
+        </div>
       </div>
 
       <nav class="p-3.5 sm:p-4 flex-1 overflow-y-auto flex flex-col gap-2">
@@ -661,6 +790,7 @@ onUnmounted(() => {
         <div
           v-for="id in settings.order"
           :key="id"
+          :data-tour="`profile-${id}`"
           class="group flex items-center gap-3 px-3.5 py-3 rounded-2xl cursor-pointer transition-all duration-150 border min-h-[46px]"
           :class="activeTab === `profile:${id}`
             ? 'bg-blue-50/80 dark:bg-slate-800/90 border-blue-500/30 dark:border-blue-500/50 text-blue-700 dark:text-blue-300 font-semibold shadow-xs'
@@ -703,6 +833,7 @@ onUnmounted(() => {
           variant="dashed"
           size="md"
           class="w-full mt-2 h-11 rounded-2xl font-medium"
+          data-tour="new-profile"
           @click="openAddModal"
         >
           <Plus :size="15" />
@@ -713,15 +844,54 @@ onUnmounted(() => {
 
         <div
           class="flex items-center gap-3 px-3.5 py-3 rounded-2xl cursor-pointer transition-all duration-150 border min-h-[46px]"
+          :class="activeTab === 'settings'
+            ? 'bg-blue-50/80 dark:bg-slate-800/90 border-blue-500/30 dark:border-blue-500/50 text-blue-700 dark:text-blue-300 font-semibold shadow-xs'
+            : 'border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100/80 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-white'"
+          @click="selectTab('settings')"
+        >
+          <Settings :size="16" class="text-indigo-600 dark:text-indigo-400" />
+          <span class="text-xs">{{ t('options.generalSettings') }}</span>
+          <button
+            type="button"
+            :title="t('options.langTitle')"
+            class="ml-auto p-1.5 rounded-lg text-slate-400 dark:text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-white/10 transition-colors"
+            @click.stop="toggleLanguage"
+          >
+            <Languages :size="14" />
+          </button>
+        </div>
+
+        <div
+          class="flex items-center gap-3 px-3.5 py-3 rounded-2xl cursor-pointer transition-all duration-150 border min-h-[46px]"
+          :class="activeTab === 'network'
+            ? 'bg-blue-50/80 dark:bg-slate-800/90 border-blue-500/30 dark:border-blue-500/50 text-blue-700 dark:text-blue-300 font-semibold shadow-xs'
+            : 'border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100/80 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-white'"
+          @click="selectTab('network')"
+        >
+          <Network :size="16" class="text-rose-600 dark:text-rose-400" />
+          <span class="text-xs">{{ t('options.networkNav') }}</span>
+        </div>
+
+        <div
+          class="flex items-center gap-3 px-3.5 py-3 rounded-2xl cursor-pointer transition-all duration-150 border min-h-[46px]"
           :class="activeTab === 'backup'
             ? 'bg-blue-50/80 dark:bg-slate-800/90 border-blue-500/30 dark:border-blue-500/50 text-blue-700 dark:text-blue-300 font-semibold shadow-xs'
             : 'border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100/80 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-white'"
           @click="selectTab('backup')"
         >
-          <Settings :size="16" class="text-indigo-600 dark:text-indigo-400" />
-          <span class="text-xs">{{ t('options.generalSettings') }}</span>
+          <Database :size="16" class="text-blue-600 dark:text-blue-400" />
+          <span class="text-xs">{{ t('options.backupNav') }}</span>
         </div>
+
       </nav>
+
+      <div class="p-3.5 sm:p-4 border-t border-slate-200/80 dark:border-white/10">
+        <button
+          type="button"
+          class="w-full flex items-center justify-center gap-1.5 text-center text-[11px] font-medium px-2 py-1.5 rounded-lg border border-slate-200/80 dark:border-white/10 text-slate-600 dark:text-slate-400 hover:bg-slate-100/80 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-white transition-colors cursor-pointer"
+          @click="showSponsor = true"
+        ><Heart :size="11" class="text-pink-500" />{{ t('options.sponsorTitle') }}</button>
+      </div>
     </aside>
 
     <!-- Main Content Area -->
@@ -789,7 +959,7 @@ onUnmounted(() => {
           </div>
 
         <!-- Fixed Profile Editor -->
-        <div v-if="fixedProfile" class="flex flex-col gap-5 pt-2">
+        <div v-if="fixedProfile" data-tour="server-config" class="flex flex-col gap-5 pt-2">
           <h3 class="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
             <Sparkles :size="16" class="text-blue-600 dark:text-blue-400" />
             {{ t('options.serverConfig') }}
@@ -1291,14 +1461,11 @@ onUnmounted(() => {
                   <h3 class="text-sm font-bold text-slate-900 dark:text-white">{{ t('options.ruleListTitle') }}</h3>
                   <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{{ t('options.ruleListDesc') }}</p>
                 </div>
-                <UiButton
-                  :variant="switchProfile.ruleList?.enabled ? 'primary' : 'outline'"
-                  size="sm"
+                <UiSwitch
+                  :checked="!!switchProfile.ruleList?.enabled"
                   class="self-start sm:self-auto shrink-0"
-                  @click="toggleRuleList(switchProfile)"
-                >
-                  {{ switchProfile.ruleList?.enabled ? t('common.enabled') : t('common.disabled') }}
-                </UiButton>
+                  @update:checked="toggleRuleList(switchProfile)"
+                />
               </div>
               <Transition name="expand">
                 <div v-if="switchProfile.ruleList?.enabled" class="flex flex-col gap-4 pt-2">
@@ -1366,10 +1533,10 @@ onUnmounted(() => {
       </div>
 
 
-        <!-- Settings & Backup Tab -->
+        <!-- Settings Tab -->
         <div
-          v-else-if="activeTab === 'backup'"
-          key="backup"
+          v-else-if="activeTab === 'settings'"
+          key="settings"
           class="w-full bg-white dark:bg-slate-900/70 border border-slate-200/80 dark:border-white/10 rounded-2xl md:rounded-3xl p-5 sm:p-6 md:p-8 shadow-xs dark:shadow-2xl flex flex-col gap-6 backdrop-blur-md"
         >
         <div>
@@ -1377,7 +1544,7 @@ onUnmounted(() => {
             <Settings :size="22" class="text-indigo-600 dark:text-indigo-400" />
             {{ t('options.settingsTitle') }}
           </h2>
-          <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">{{ t('options.exportDesc') }}</p>
+          <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">{{ t('options.settingsDesc') }}</p>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6 w-full">
@@ -1421,6 +1588,136 @@ onUnmounted(() => {
             />
           </div>
 
+        </div>
+      </div>
+
+
+        <!-- Network Tab -->
+        <div
+          v-else-if="activeTab === 'network'"
+          key="network"
+          class="w-full bg-white dark:bg-slate-900/70 border border-slate-200/80 dark:border-white/10 rounded-2xl md:rounded-3xl p-5 sm:p-6 md:p-8 shadow-xs dark:shadow-2xl flex flex-col gap-6 backdrop-blur-md"
+        >
+        <div>
+          <h2 class="text-xl font-bold tracking-tight text-slate-900 dark:text-white flex items-center gap-2.5">
+            <Network :size="22" class="text-rose-600 dark:text-rose-400" />
+            {{ t('options.networkTitle') }}
+          </h2>
+          <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">{{ t('options.networkDesc') }}</p>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 w-full">
+          <div class="p-5 sm:p-6 bg-slate-50/60 dark:bg-slate-950/60 border border-slate-200/80 dark:border-white/10 rounded-2xl sm:rounded-3xl flex flex-col gap-3 shadow-xs">
+            <h3 class="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <Shield :size="16" class="text-rose-600 dark:text-rose-400" />
+              {{ t('options.webRtcTitle') }}
+            </h3>
+            <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('options.webRtcDesc') }}</p>
+            <UiSelect
+              :model-value="settings.webRtcMode || 'default'"
+              :options="webRtcOptions"
+              @update:model-value="settings.webRtcMode = $event as any; saveCurrentSettings()"
+            />
+          </div>
+
+          <div class="p-5 sm:p-6 bg-slate-50/60 dark:bg-slate-950/60 border border-slate-200/80 dark:border-white/10 rounded-2xl sm:rounded-3xl flex flex-col gap-3 shadow-xs">
+            <h3 class="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <Globe :size="16" class="text-sky-600 dark:text-sky-400" />
+              {{ t('options.dnsPrefetchTitle') }}
+            </h3>
+            <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('options.dnsPrefetchDesc') }}</p>
+            <label class="flex items-center gap-2 cursor-pointer text-sm text-slate-700 dark:text-slate-300">
+              <UiSwitch
+                :checked="settings.disableNetworkPrediction"
+                @update:checked="settings.disableNetworkPrediction = $event; saveCurrentSettings()"
+              />
+              {{ t('options.dnsPrefetchSwitch') }}
+            </label>
+          </div>
+        </div>
+
+        <!-- IP Leak Test -->
+        <div class="flex flex-col gap-4 pt-2">
+          <div class="flex flex-col sm:flex-row justify-between sm:items-center gap-3">
+            <div>
+              <h3 class="text-sm font-bold text-slate-900 dark:text-white">{{ t('options.leakTestTitle') }}</h3>
+              <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{{ t('options.leakTestDesc') }}</p>
+            </div>
+            <UiButton variant="primary" size="sm" class="self-start sm:self-auto shrink-0" :loading="leakRunning" @click="runLeakTest">
+              {{ leakRunning ? t('options.leakRunning') : t('options.leakRun') }}
+            </UiButton>
+          </div>
+
+          <div v-if="leakRan" class="grid grid-cols-1 md:grid-cols-2 gap-6 w-full">
+
+            <div class="p-5 sm:p-6 bg-slate-50/60 dark:bg-slate-950/60 border border-slate-200/80 dark:border-white/10 rounded-2xl sm:rounded-3xl flex flex-col gap-2 shadow-xs md:col-span-2">
+              <h3 class="text-sm font-bold text-slate-900 dark:text-white">{{ t('options.leakExitInfoTitle') }}</h3>
+              <p class="text-lg font-bold font-mono text-slate-900 dark:text-white">{{ exitInfo?.ip || exitIps[0] || '—' }}</p>
+              <p v-if="exitInfo" class="text-xs text-slate-500 dark:text-slate-400">
+                {{ [exitInfo.city, exitInfo.region, exitInfo.countryName].filter(Boolean).join(', ') }}
+                <template v-if="exitInfo.org"> · {{ exitInfo.org }}</template>
+              </p>
+            </div>
+            <div class="p-5 sm:p-6 bg-slate-50/60 dark:bg-slate-950/60 border border-slate-200/80 dark:border-white/10 rounded-2xl sm:rounded-3xl flex flex-col gap-3 shadow-xs">
+              <h3 class="text-sm font-bold text-slate-900 dark:text-white">{{ t('options.leakExitTitle') }}</h3>
+              <p class="text-xs font-semibold" :class="exitConsistent ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'">
+                {{ exitConsistent ? t('options.leakExitOk') : t('options.leakExitBad') }}
+              </p>
+              <ul class="flex flex-col gap-1 text-xs font-mono text-slate-600 dark:text-slate-400">
+                <li v-for="r in exitResults" :key="r.name" class="flex justify-between gap-3">
+                  <span>{{ r.name }}</span>
+                  <span :class="r.error ? 'text-rose-500' : ''">{{ r.ip || r.error }}</span>
+                </li>
+              </ul>
+            </div>
+            <div class="p-5 sm:p-6 bg-slate-50/60 dark:bg-slate-950/60 border border-slate-200/80 dark:border-white/10 rounded-2xl sm:rounded-3xl flex flex-col gap-3 shadow-xs">
+              <h3 class="text-sm font-bold text-slate-900 dark:text-white">{{ t('options.leakWebRtcTitle') }}</h3>
+              <p class="text-xs font-semibold" :class="webRtcLeaked ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'">
+                {{ iceCandidates.length === 0 ? t('options.leakWebRtcNone') : webRtcLeaked ? t('options.leakWebRtcBad') : t('options.leakWebRtcOk') }}
+              </p>
+              <ul v-if="iceCandidates.length" class="flex flex-col gap-1 text-xs font-mono text-slate-600 dark:text-slate-400">
+                <li v-for="c in iceCandidates" :key="`${c.type}:${c.ip}`" class="flex justify-between gap-3">
+                  <span>{{ c.type }}</span>
+                  <span :class="classifyIp(c.ip) === 'public' ? 'text-rose-500 font-bold' : ''">{{ c.ip }} ({{ classifyIp(c.ip) }})</span>
+                </li>
+              </ul>
+            </div>
+
+            <div class="p-5 sm:p-6 bg-slate-50/60 dark:bg-slate-950/60 border border-slate-200/80 dark:border-white/10 rounded-2xl sm:rounded-3xl flex flex-col gap-3 shadow-xs md:col-span-2">
+              <h3 class="text-sm font-bold text-slate-900 dark:text-white">{{ t('options.leakDnsTitle') }}</h3>
+              <p v-if="!dnsError && dnsServers.length" class="text-xs font-semibold" :class="dnsLeaked ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'">
+                {{ dnsLeaked ? t('options.leakDnsBad') : t('options.leakDnsOk') }}
+              </p>
+              <p v-else class="text-xs font-semibold text-rose-600 dark:text-rose-400">
+                {{ dnsError || t('options.leakDnsNone') }}
+              </p>
+              <ul v-if="dnsServers.length" class="flex flex-col gap-1 text-xs font-mono text-slate-600 dark:text-slate-400">
+                <li v-for="s in dnsServers" :key="s.ip" class="flex flex-wrap justify-between gap-3">
+                  <span :class="exitInfo?.countryCode && s.country && s.country !== exitInfo.countryCode ? 'text-rose-500 font-bold' : ''">{{ s.ip }}</span>
+                  <span>{{ s.countryName || s.country }} · {{ s.org || s.asn }}</span>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+
+
+        <!-- Backup Tab -->
+        <div
+          v-else-if="activeTab === 'backup'"
+          key="backup"
+          class="w-full bg-white dark:bg-slate-900/70 border border-slate-200/80 dark:border-white/10 rounded-2xl md:rounded-3xl p-5 sm:p-6 md:p-8 shadow-xs dark:shadow-2xl flex flex-col gap-6 backdrop-blur-md"
+        >
+        <div>
+          <h2 class="text-xl font-bold tracking-tight text-slate-900 dark:text-white flex items-center gap-2.5">
+            <Database :size="22" class="text-blue-600 dark:text-blue-400" />
+            {{ t('options.backupTitle') }}
+          </h2>
+          <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">{{ t('options.backupDesc') }}</p>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 w-full">
           <div class="p-5 sm:p-6 bg-slate-50/60 dark:bg-slate-950/60 border border-slate-200/80 dark:border-white/10 rounded-2xl sm:rounded-3xl flex flex-col gap-3 shadow-xs">
             <h3 class="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
               <Cloud :size="16" class="text-sky-600 dark:text-sky-400" />
@@ -1428,18 +1725,14 @@ onUnmounted(() => {
             </h3>
             <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('options.cloudSyncDesc') }}</p>
             <label class="flex items-center gap-2 cursor-pointer text-sm text-slate-700 dark:text-slate-300">
-              <input
-                type="checkbox"
+              <UiSwitch
                 :checked="settings.enableCloudSync"
-                class="accent-indigo-600 w-4 h-4"
-                @change="settings.enableCloudSync = ($event.target as HTMLInputElement).checked; saveCurrentSettings()"
+                @update:checked="settings.enableCloudSync = $event; saveCurrentSettings()"
               />
               {{ t('options.cloudSyncTitle') }}
             </label>
           </div>
-        </div>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2 w-full">
           <div class="p-5 sm:p-6 bg-slate-50/60 dark:bg-slate-950/60 border border-slate-200/80 dark:border-white/10 rounded-2xl sm:rounded-3xl flex flex-col gap-3 shadow-xs">
             <h3 class="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
               <Download :size="16" class="text-blue-600 dark:text-blue-400" />
@@ -1458,13 +1751,11 @@ onUnmounted(() => {
               {{ t('options.importTitle') }}
             </h3>
             <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('options.importDesc') }}</p>
-            <label class="self-start mt-2 cursor-pointer">
-              <UiButton variant="outline" size="sm" type="button">
-                <Upload :size="14" />
-                {{ t('options.importBtn') }}
-              </UiButton>
-              <input type="file" accept=".bak,.json" style="display: none;" @change="handleFileImport" />
-            </label>
+            <UiButton variant="outline" size="sm" type="button" class="self-start mt-2" @click="fileInput?.click()">
+              <Upload :size="14" />
+              {{ t('options.importBtn') }}
+            </UiButton>
+            <input ref="fileInput" type="file" accept=".bak,.json" class="hidden" @change="handleFileImport" />
           </div>
         </div>
       </div>
@@ -1577,5 +1868,9 @@ onUnmounted(() => {
         </div>
       </div>
     </UiDialog>
+
+    <GuideDialog v-model:open="showGuide" />
+
+    <SponsorDialog v-model:open="showSponsor" :wall="sponsorWall" />
   </div>
 </template>

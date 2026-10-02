@@ -26,6 +26,7 @@
 - **🎨 现代交互体验**：
   - 响应式深色/浅色自适应界面。
   - 支持 Chrome 现代化 Side Panel（侧边栏），常驻进行流量诊断与规则调试。
+  - 首次安装自动打开新手操作指引（聚光灯定位真实按钮），配置页 logo 旁小图标可随时重看。
 
 ---
 
@@ -82,6 +83,18 @@ pnpm test
 pnpm build
 ```
 编译产物输出至 `.output/chrome-mv3`，或运行 `pnpm zip` 直接打包为发布用压缩包。
+
+---
+
+## ☕ 赞助支持
+
+NeoOmega 免费且开源。如果它帮你从 SwitchyOmega / ZeroOmega 无痛迁移，欢迎请作者喝杯咖啡 ♥（支持微信/支付宝，海外用户可刷外币卡）
+
+[![爱发电](https://img.shields.io/badge/爱发电-支持作者-946ce6)](https://afdian.com/a/izhimu)
+
+<!-- SPONSORS:START -->
+还没有赞助者，来当第一个 ♥
+<!-- SPONSORS:END -->
 
 ---
 

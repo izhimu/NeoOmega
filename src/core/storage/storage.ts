@@ -111,6 +111,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   enableErrorMonitoring: true,
   ruleListUpdateInterval: 120,
   enableCloudSync: false,
+  webRtcMode: 'default',
+  disableNetworkPrediction: false,
 };
 
 const STORAGE_KEY = 'neo_omega_settings';

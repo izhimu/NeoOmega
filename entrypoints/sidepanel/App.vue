@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue';
-import { Trash2, Settings, Radio, Search, Plus, ExternalLink, Shield } from 'lucide-vue-next';
+import { Trash2, Settings, Radio, Search, Plus, ExternalLink, Shield } from '@lucide/vue';
 import { Toaster, toast } from 'vue-sonner';
 import { getSettings } from '../../src/core/storage/storage';
 import type { AppSettings, Profile, TabNetworkError, TabRequestLog } from '../../src/core/types';

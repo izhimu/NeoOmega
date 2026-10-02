@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue';
-import { Settings, Activity, ArrowUpRight, Globe } from 'lucide-vue-next';
+import { Settings, Activity, ArrowUpRight, Globe } from '@lucide/vue';
 import { getSettings } from '../../src/core/storage/storage';
 import type { AppSettings, Profile, SwitchRule, TabNetworkError } from '../../src/core/types';
 import { matchCondition } from '../../src/core/pac/matcher';

@@ -11,7 +11,7 @@ import {
   SelectValue,
   SelectViewport,
 } from 'radix-vue';
-import { Check, ChevronDown } from 'lucide-vue-next';
+import { Check, ChevronDown } from '@lucide/vue';
 import { cn } from '../../lib/utils';
 
 export interface SelectOption {

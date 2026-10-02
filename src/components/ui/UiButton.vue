@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { cn } from '../../lib/utils';
-import { Loader2 } from 'lucide-vue-next';
+import { Loader2 } from '@lucide/vue';
 
 interface Props {
   variant?: 'primary' | 'secondary' | 'outline' | 'destructive' | 'ghost' | 'dashed';

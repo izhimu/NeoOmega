@@ -25,6 +25,9 @@ export default defineBackground(() => {
   chrome.runtime.onInstalled.addListener(async (details) => {
     console.log('[NeoOmega] Extension installed/updated:', details.reason);
     await init();
+    if (details.reason === 'install') {
+      chrome.runtime.openOptionsPage();
+    }
   });
 
   chrome.runtime.onStartup.addListener(async () => {
@@ -35,7 +38,14 @@ export default defineBackground(() => {
   // Setup periodic rule list update alarm (every 2 hours)
   if (chrome.alarms) {
     getSettings().then((s) => {
-      chrome.alarms.create('neo_omega_update_rules', { periodInMinutes: Math.max(15, s.ruleListUpdateInterval ?? 120) });
+      const period = Math.max(15, s.ruleListUpdateInterval ?? 120);
+      // create() with an existing name resets the schedule; SW cold-starts are
+      // frequent (webRequest wakes), which would postpone the alarm forever.
+      chrome.alarms.get('neo_omega_update_rules', (existing) => {
+        if (!existing || existing.periodInMinutes !== period) {
+          chrome.alarms.create('neo_omega_update_rules', { periodInMinutes: period });
+        }
+      });
     });
     chrome.alarms.onAlarm.addListener(async (alarm) => {
       if (alarm.name === 'neo_omega_update_rules') {
@@ -371,9 +381,20 @@ export default defineBackground(() => {
     });
   });
 
+  // WebRTC IP handling: proxy PAC never covers WebRTC UDP, so this policy
+  // is the only lever against real-IP leaks (STUN host/srflx candidates).
+  const applyWebRtcPolicy = (mode: AppSettings['webRtcMode']) => {
+    chrome.privacy?.network?.webRTCIPHandlingPolicy?.set({ value: mode ?? 'default' });
+  };
+  // DNS prefetch/prerender resolve hostnames locally, bypassing the proxy's remote DNS
+  const applyNetworkPrediction = (disabled: boolean | undefined) => {
+    chrome.privacy?.network?.networkPredictionEnabled?.set({ value: !disabled });
+  };
   getSettings()
     .then((s) => {
       errorTrackingOn = !!s.enableErrorMonitoring;
+      applyWebRtcPolicy(s.webRtcMode);
+      applyNetworkPrediction(s.disableNetworkPrediction);
       syncWebRequestListeners();
     })
     .catch(() => {});
@@ -382,6 +403,12 @@ export default defineBackground(() => {
     const change = changes['neo_omega_settings'];
     if (!change) return;
     errorTrackingOn = !!(change.newValue as AppSettings | undefined)?.enableErrorMonitoring;
+    const oldRtc = (change.oldValue as AppSettings | undefined)?.webRtcMode ?? 'default';
+    const newRtc = (change.newValue as AppSettings | undefined)?.webRtcMode ?? 'default';
+    if (oldRtc !== newRtc) applyWebRtcPolicy(newRtc);
+    const oldNp = !!(change.oldValue as AppSettings | undefined)?.disableNetworkPrediction;
+    const newNp = !!(change.newValue as AppSettings | undefined)?.disableNetworkPrediction;
+    if (oldNp !== newNp) applyNetworkPrediction(newNp);
     const oldIv = (change.oldValue as AppSettings | undefined)?.ruleListUpdateInterval ?? 120;
     const newIv = (change.newValue as AppSettings | undefined)?.ruleListUpdateInterval ?? 120;
     if (chrome.alarms && oldIv !== newIv) {

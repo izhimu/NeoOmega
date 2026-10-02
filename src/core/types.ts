@@ -116,6 +116,8 @@ export type Profile =
   | SwitchProfile
   | VirtualProfile;
 
+export type WebRtcMode = 'default' | 'default_public_interface_only' | 'disable_non_proxied_udp';
+
 export interface AppSettings {
   activeProfileId: string;
   profiles: Record<string, Profile>;
@@ -125,6 +127,8 @@ export interface AppSettings {
   enableErrorMonitoring: boolean;
   ruleListUpdateInterval?: number; // minutes, default 120
   enableCloudSync?: boolean; // mirror profiles into chrome.storage.sync
+  webRtcMode?: WebRtcMode; // chrome.privacy IP handling policy, default 'default'
+  disableNetworkPrediction?: boolean; // kill DNS prefetch/prerender (local-resolve leaks)
   settingsUpdatedAt?: number; // ms epoch, last-write-wins for sync
   syncConfig?: {
     type: 'none' | 'webdav' | 'gist';

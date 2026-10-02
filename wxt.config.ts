@@ -21,6 +21,8 @@ export default defineConfig({
       'webRequest',
       'webRequestAuthProvider',
       'sidePanel',
+      'scripting',
+      'privacy',
     ],
     host_permissions: ['<all_urls>'],
     action: {

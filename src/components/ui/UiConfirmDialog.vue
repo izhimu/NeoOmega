@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import UiDialog from './UiDialog.vue';
 import UiButton from './UiButton.vue';
-import { AlertCircle, AlertTriangle } from 'lucide-vue-next';
+import { AlertCircle, AlertTriangle } from '@lucide/vue';
 
 interface Props {
   open?: boolean;
