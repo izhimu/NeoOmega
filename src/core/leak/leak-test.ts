@@ -138,6 +138,9 @@ export function parseCandidate(raw: string): IceCandidateInfo | null {
 
 /** Classify a candidate address: private LAN, mDNS placeholder, or public. */
 export function classifyIp(ip: string): IpClass {
+  // IPv4-mapped IPv6 (::ffff:192.168.1.1) → classify by embedded IPv4
+  const mapped = ip.toLowerCase().match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (mapped) return classifyIp(mapped[1]!);
   if (ip.endsWith('.local')) return 'mdns';
   const v4 = ip.match(/^(\d+)\.(\d+)\./);
   if (v4) {
@@ -300,6 +303,8 @@ export async function gatherIceCandidatesFromWebPage(timeoutMs = 15000): Promise
       args: [4000],
     });
     return (results[0]?.result as IceCandidateInfo[] | undefined) ?? [];
+  } catch {
+    return []; // restricted pages (e.g. Chrome Web Store) reject; don't abort the whole run
   } finally {
     if (tempTab) chrome.tabs.remove(tabId).catch(() => {});
   }

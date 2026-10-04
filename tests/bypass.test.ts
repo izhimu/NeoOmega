@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { ref, computed } from 'vue';
 import { normalizeBypassList } from '../src/core/storage/storage';
+import { matchCondition } from '../src/core/pac/matcher';
+import { addBypass, removeBypass } from '../src/core/bypass';
 import type { FixedProfile } from '../src/core/types';
 
 describe('normalizeBypassList', () => {
@@ -79,34 +81,27 @@ describe('Bypass list management', () => {
       ],
     });
 
-    const addBypass = () => {
-      const fp = fixedProfile.value;
-      if (!fp) return;
-      if (!Array.isArray(fp.bypassList)) fp.bypassList = [];
-      fp.bypassList.push({
-        id: `bp_${Date.now()}_test`,
-        pattern: '',
-        conditionType: 'BypassCondition',
-      });
-    };
-
-    const removeBypass = (indexOrId: number | string) => {
-      const fp = fixedProfile.value;
-      if (!fp || !Array.isArray(fp.bypassList)) return;
-      if (typeof indexOrId === 'string') {
-        const idx = fp.bypassList.findIndex((item) => item.id === indexOrId);
-        if (idx !== -1) fp.bypassList.splice(idx, 1);
-      } else if (indexOrId >= 0 && indexOrId < fp.bypassList.length) {
-        fp.bypassList.splice(indexOrId, 1);
-      }
-    };
-
-    addBypass();
+    addBypass(fixedProfile.value);
     expect(fixedProfile.value.bypassList).toHaveLength(3);
     expect(fixedProfile.value.bypassList[2]?.pattern).toBe('');
 
-    removeBypass('bp_1');
+    removeBypass(fixedProfile.value, 'bp_1');
     expect(fixedProfile.value.bypassList).toHaveLength(2);
     expect(fixedProfile.value.bypassList[0]?.id).toBe('bp_2');
+
+    // Delete by numeric index
+    removeBypass(fixedProfile.value, 0);
+    expect(fixedProfile.value.bypassList).toHaveLength(1);
+    expect(fixedProfile.value.bypassList[0]?.pattern).toBe('');
+
+  });
+});
+
+describe('BypassCondition bare domain', () => {
+  it('matches subdomains per Chrome bypass convention', () => {
+    const cond = { conditionType: 'BypassCondition' as const, pattern: 'example.com' };
+    expect(matchCondition(cond, 'http://example.com/', 'example.com')).toBe(true);
+    expect(matchCondition(cond, 'http://www.example.com/', 'www.example.com')).toBe(true);
+    expect(matchCondition(cond, 'http://notexample.com/', 'notexample.com')).toBe(false);
   });
 });

@@ -15,8 +15,6 @@ export default defineConfig({
     permissions: [
       'proxy',
       'storage',
-      'unlimitedStorage',
-      'tabs',
       'alarms',
       'webRequest',
       'webRequestAuthProvider',
@@ -28,7 +26,6 @@ export default defineConfig({
     action: {
       default_title: '__MSG_extName__',
     },
-    options_page: 'options.html',
     options_ui: {
       open_in_tab: true,
     },

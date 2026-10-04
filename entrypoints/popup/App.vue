@@ -11,6 +11,7 @@ import { applyTheme, initThemeListener } from '../../src/core/theme';
 import UiButton from '../../src/components/ui/UiButton.vue';
 import UiBadge from '../../src/components/ui/UiBadge.vue';
 import AppLogo from '../../src/components/ui/AppLogo.vue';
+import { openOptions } from '../../src/lib/navigation';
 
 const settings = ref<AppSettings | null>(null);
 const currentTabHost = ref<string>('');
@@ -108,8 +109,9 @@ const testFixedProfiles = async (force = false) => {
   const now = Date.now();
   const CACHE_TTL = 60 * 1000;
 
-  for (const id of (settings.value.order || [])) {
-    const profile = settings.value.profiles[id];
+  // Sequential: TEST_PROXY mutates global chrome.proxy.settings, background enforces single-flight
+  for (const id of settings.value.order || []) {
+    const profile = settings.value?.profiles?.[id];
     if (profile?.profileType === 'FixedProfile' && (profile as any).fallbackProxy?.host && (profile as any).fallbackProxy?.port) {
       const cached = latencies.value[id];
       if (!force && cached && (now - cached.timestamp < CACHE_TTL)) {
@@ -239,23 +241,6 @@ const addQuickRule = (host: string) => {
   );
 };
 
-const openOptions = async () => {
-  if (typeof chrome === 'undefined') return;
-  const optionsUrl = chrome.runtime.getURL('options.html');
-  if (chrome.tabs?.query && chrome.tabs?.create) {
-    const tabs = await chrome.tabs.query({ url: optionsUrl });
-    if (tabs.length > 0 && tabs[0]?.id !== undefined) {
-      await chrome.tabs.update(tabs[0].id, { active: true });
-      if (tabs[0].windowId) {
-        await chrome.windows.update(tabs[0].windowId, { focused: true });
-      }
-      return;
-    }
-    await chrome.tabs.create({ url: optionsUrl });
-  } else if (chrome.runtime?.openOptionsPage) {
-    chrome.runtime.openOptionsPage();
-  }
-};
 
 onMounted(() => {
   loadState();

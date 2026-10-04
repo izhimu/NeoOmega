@@ -34,9 +34,12 @@ twitter.com
     expect(rules[1]?.condition.conditionType).toBe('HostWildcardCondition');
     expect(matchCondition(rules[1]!.condition, 'https://www.google.com/search', 'www.google.com')).toBe(true);
     expect(matchCondition(rules[1]!.condition, 'https://google.com/', 'google.com')).toBe(true);
-    // Rule 3: |^https?://... -> UrlRegexCondition or UrlWildcard
+    // Rule 2: |^https?://... -> UrlRegexCondition
     expect(rules[2]?.profileId).toBe('proxy');
-
+    expect(rules[2]?.condition.conditionType).toBe('UrlRegexCondition');
+    expect(matchCondition(rules[2]!.condition, 'https://en.wikipedia.org/wiki/Main_Page', 'en.wikipedia.org')).toBe(true);
+    expect(matchCondition(rules[2]!.condition, 'http://wikipedia.org/', 'wikipedia.org')).toBe(true);
+    expect(matchCondition(rules[2]!.condition, 'https://example.com/', 'example.com')).toBe(false);
     // Rule 4: |http://unencrypted.com/path
     expect(rules[3]?.condition.conditionType).toBe('UrlWildcardCondition');
     expect(matchCondition(rules[3]!.condition, 'http://unencrypted.com/path/123', 'unencrypted.com')).toBe(true);

@@ -23,7 +23,7 @@ export function decodeRuleListText(content: string): string {
   try {
     const cleaned = trimmed.replace(/\s+/g, '');
     if (typeof atob === 'function') {
-      return atob(cleaned);
+      return new TextDecoder().decode(Uint8Array.from(atob(cleaned), (c) => c.charCodeAt(0)));
     }
     // Node.js fallback for tests
     return Buffer.from(cleaned, 'base64').toString('utf-8');
@@ -60,7 +60,7 @@ export function parseAutoProxyLine(
 
   if (raw.startsWith('||')) {
     // Domain match: ||example.com matches example.com and *.example.com
-    const domain = raw.slice(2).replace(/^\*+\.?/, '');
+    const domain = raw.slice(2).replace(/^\*+\.?/, '').replace(/\^.*$/, '');
     conditionType = 'HostWildcardCondition';
     pattern = `*.${domain}`;
   } else if (raw.startsWith('/') && raw.endsWith('/') && raw.length > 2) {
@@ -68,9 +68,17 @@ export function parseAutoProxyLine(
     conditionType = 'UrlRegexCondition';
     pattern = raw.slice(1, -1);
   } else if (raw.startsWith('|')) {
-    // URL prefix match: |http://...
-    conditionType = 'UrlWildcardCondition';
-    pattern = `${raw.slice(1)}*`;
+    let rem = raw.slice(1);
+    const hasTrailing = rem.endsWith('|');
+    if (hasTrailing) rem = rem.slice(0, -1);
+    // Heuristic: treat rules with regex metachars (excluding * wildcards) as anchored regex
+    if (/[\^$\\()[\]?+]/.test(rem.replace(/\*/g, ''))) {
+      conditionType = 'UrlRegexCondition';
+      pattern = (rem.startsWith('^') ? rem : `^${rem}`) + (hasTrailing && !rem.endsWith('$') ? '$' : '');
+    } else {
+      conditionType = 'UrlWildcardCondition';
+      pattern = hasTrailing ? rem : `${rem}*`;
+    }
   } else if (raw.endsWith('|')) {
     // URL suffix match: .mp4|
     conditionType = 'UrlWildcardCondition';

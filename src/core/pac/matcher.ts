@@ -53,6 +53,7 @@ export function isInSubnetV4(ip: string, cidr: string): boolean {
   const rangeNum = ipv4ToNumber(range);
   if (ipNum === null || rangeNum === null) return false;
 
+  if (!Number.isInteger(bits) || bits < 0 || bits > 32) return false;
   const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
   return (ipNum & mask) === (rangeNum & mask);
 }
@@ -112,27 +113,31 @@ export function matchCondition(condition: RuleCondition, url: string, host: stri
     }
 
     case 'IpCondition': {
+      // ponytail: no DNS here — hostnames never match, while PAC isInNet resolves them; preview may under-report
       return isInSubnetV4(host, pattern);
     }
 
     case 'BypassCondition': {
       // Handles Chrome bypass list conventions
+      const h = host.toLowerCase();
+      const p = pattern.toLowerCase();
       // 1. <local>
-      if (pattern === '<local>') {
-        return !host.includes('.') || host === 'localhost' || host === '127.0.0.1' || host === '::1';
+      if (p === '<local>') {
+        return !h.includes('.') || h === 'localhost' || h === '127.0.0.1' || h === '::1';
       }
       // 2. CIDR
-      if (pattern.includes('/')) {
-        return isInSubnetV4(host, pattern);
+      if (p.includes('/')) {
+        return isInSubnetV4(h, pattern);
       }
       // 3. Domain or Wildcard (e.g. .example.com or *.example.com)
-      if (pattern.startsWith('.')) {
-        return host.endsWith(pattern) || host === pattern.slice(1);
+      if (p.startsWith('.')) {
+        return h.endsWith(p) || h === p.slice(1);
       }
-      if (pattern.startsWith('*.')) {
-        return host.endsWith(pattern.slice(1)) || host === pattern.slice(2);
+      if (p.startsWith('*.')) {
+        return h.endsWith(p.slice(1)) || h === p.slice(2);
       }
-      return host.toLowerCase() === pattern.toLowerCase();
+      // Chrome bypass convention: bare domain also matches subdomains
+      return h === p || h.endsWith('.' + p);
     }
 
     default:
@@ -154,20 +159,36 @@ export function conditionToPacCode(condition: RuleCondition): string {
 
     case 'HostWildcardCondition': {
       const reg = hostWildcardToRegExpString(pattern);
+      if (/[\r\n]/.test(reg)) return 'false'; // literal would break single-line PAC
       return `/${reg}/i.test(host)`;
     }
 
-    case 'HostRegexCondition':
-      return `/${pattern.replace(/(?<!\\)\//g, '\\/')}/i.test(host)`;
-
+    case 'HostRegexCondition': {
+      try {
+        const escaped = pattern.replace(/(?<!\\)\//g, '\\/');
+        if (/[\r\n]/.test(escaped)) return 'false'; // literal would break single-line PAC
+        new RegExp(escaped, 'i');
+        return `/${escaped}/i.test(host)`;
+      } catch {
+        return 'false';
+      }
+    }
     case 'UrlWildcardCondition': {
       const reg = `^${wildcardToRegExpString(pattern)}$`;
+      if (/[\r\n]/.test(reg)) return 'false'; // literal would break single-line PAC
       return `/${reg}/i.test(url)`;
     }
 
-    case 'UrlRegexCondition':
-      return `/${pattern.replace(/(?<!\\)\//g, '\\/')}/i.test(url)`;
-
+    case 'UrlRegexCondition': {
+      try {
+        const escaped = pattern.replace(/(?<!\\)\//g, '\\/');
+        if (/[\r\n]/.test(escaped)) return 'false';
+        new RegExp(escaped, 'i');
+        return `/${escaped}/i.test(url)`;
+      } catch {
+        return 'false';
+      }
+    }
     case 'KeywordCondition':
       // Case-insensitive to match matchCondition() semantics
       return `url.toLowerCase().indexOf(${JSON.stringify(pattern.toLowerCase())}) !== -1`;
@@ -180,24 +201,25 @@ export function conditionToPacCode(condition: RuleCondition): string {
     }
 
     case 'BypassCondition': {
-      if (pattern === '<local>') {
-        return `(isPlainHostName(host) || host === "127.0.0.1" || host === "::1" || host === "localhost")`;
+      const p = pattern.toLowerCase();
+      if (p === '<local>') {
+        return `(isPlainHostName(host) || host === "127.0.0.1" || host === "::1" || host.toLowerCase() === "localhost")`;
       }
-      if (pattern.includes('/')) {
+      if (p.includes('/')) {
         const [ip, bitsStr] = pattern.split('/');
         const bits = bitsStr ? parseInt(bitsStr, 10) : 32;
         const mask = cidrBitsToMask(bits);
         return `isInNet(host, ${JSON.stringify(ip)}, ${JSON.stringify(mask)})`;
       }
-      if (pattern.startsWith('.')) {
-        const domain = pattern.slice(1);
-        return `(dnsDomainIs(host, ${JSON.stringify('.' + domain)}) || host === ${JSON.stringify(domain)})`;
+      if (p.startsWith('.')) {
+        const domain = p.slice(1);
+        return `(dnsDomainIs(host, ${JSON.stringify('.' + domain)}) || host.toLowerCase() === ${JSON.stringify(domain)})`;
       }
-      if (pattern.startsWith('*.')) {
-        const domain = pattern.slice(2);
-        return `(dnsDomainIs(host, ${JSON.stringify('.' + domain)}) || host === ${JSON.stringify(domain)})`;
+      if (p.startsWith('*.')) {
+        const domain = p.slice(2);
+        return `(dnsDomainIs(host, ${JSON.stringify('.' + domain)}) || host.toLowerCase() === ${JSON.stringify(domain)})`;
       }
-      return `host === ${JSON.stringify(pattern)}`;
+      return `(host.toLowerCase() === ${JSON.stringify(p)} || dnsDomainIs(host, ${JSON.stringify('.' + p)}))`;
     }
 
     default:
@@ -206,7 +228,8 @@ export function conditionToPacCode(condition: RuleCondition): string {
 }
 
 function cidrBitsToMask(bits: number): string {
-  const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
+  const clamped = Number.isInteger(bits) ? Math.min(32, Math.max(0, bits)) : 32;
+  const mask = clamped === 0 ? 0 : (~0 << (32 - clamped)) >>> 0;
   return [
     (mask >>> 24) & 255,
     (mask >>> 16) & 255,

@@ -123,6 +123,13 @@ export async function getSettings(): Promise<AppSettings> {
   }
   const result = await chrome.storage.local.get(STORAGE_KEY);
   if (!result[STORAGE_KEY]) {
+    // Fresh install: adopt cloud-synced settings before stamping defaults,
+    // otherwise the defaults' fresh settingsUpdatedAt forever out-dates the remote copy.
+    const remote = await readSyncSnapshot();
+    if (remote?.profiles) {
+      await saveSettings(remote);
+      return remote;
+    }
     await saveSettings(DEFAULT_SETTINGS);
     return DEFAULT_SETTINGS;
   }
@@ -163,7 +170,7 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
 
 const SYNC_META = 'neo_omega_sync_meta';
 const SYNC_CHUNK = 'neo_omega_sync_';
-const SYNC_CHUNK_SIZE = 6000; // sync quota: 8192 B/item
+const SYNC_CHUNK_SIZE = 2500; // sync quota: 8192 B/item; CJK chars are 3 B in UTF-8
 
 /** Strip bulky rule caches; sync quota is 100KB total */
 function stripForSync(settings: AppSettings): AppSettings {
@@ -185,13 +192,40 @@ export async function pushSettingsToSync(settings: AppSettings): Promise<void> {
     for (let i = 0; i < text.length; i += SYNC_CHUNK_SIZE) {
       chunks.push(text.slice(i, i + SYNC_CHUNK_SIZE));
     }
+    const metaRes = await chrome.storage.sync.get(SYNC_META);
+    const oldChunks = (metaRes[SYNC_META] as { chunks?: number } | undefined)?.chunks ?? 0;
+
     const items: Record<string, unknown> = {
       [SYNC_META]: { chunks: chunks.length, updatedAt: settings.settingsUpdatedAt ?? 0 },
     };
     chunks.forEach((c, i) => { items[`${SYNC_CHUNK}${i}`] = c; });
     await chrome.storage.sync.set(items);
+
+    if (oldChunks > chunks.length) {
+      const orphans = Array.from(
+        { length: oldChunks - chunks.length },
+        (_, i) => `${SYNC_CHUNK}${chunks.length + i}`
+      );
+      await chrome.storage.sync.remove(orphans);
+    }
   } catch (err) {
     console.warn('[NeoOmega] sync push failed:', err);
+  }
+}
+
+/** Read and assemble the sync snapshot; null when absent or corrupt. No staleness check. */
+async function readSyncSnapshot(): Promise<AppSettings | null> {
+  if (typeof chrome === 'undefined' || !chrome.storage?.sync) return null;
+  const metaRes = await chrome.storage.sync.get(SYNC_META);
+  const meta = metaRes[SYNC_META] as { chunks: number; updatedAt: number } | undefined;
+  if (!meta || meta.chunks <= 0) return null;
+  const keys = Array.from({ length: meta.chunks }, (_, i) => `${SYNC_CHUNK}${i}`);
+  const chunkRes = await chrome.storage.sync.get(keys);
+  const text = keys.map((k) => (chunkRes[k] as string | undefined) ?? '').join('');
+  try {
+    return JSON.parse(text) as AppSettings;
+  } catch {
+    return null;
   }
 }
 
@@ -203,20 +237,27 @@ export async function pullSettingsFromSync(): Promise<AppSettings | null> {
   if (!meta || meta.chunks <= 0) return null;
   const local = await getSettings();
   if ((local.settingsUpdatedAt ?? 0) >= meta.updatedAt) return null;
-  const keys = Array.from({ length: meta.chunks }, (_, i) => `${SYNC_CHUNK}${i}`);
-  const chunkRes = await chrome.storage.sync.get(keys);
-  const text = keys.map((k) => (chunkRes[k] as string | undefined) ?? '').join('');
-  try {
-    return JSON.parse(text) as AppSettings;
-  } catch {
-    return null;
-  }
+  return readSyncSnapshot();
 }
 
 /** Adopt remote sync settings into local storage (no sync re-push). Returns true when adopted. */
 export async function adoptSyncSettings(): Promise<boolean> {
   const remote = await pullSettingsFromSync();
   if (!remote?.profiles) return false;
+  const local = await getSettings();
+  if (!local.enableCloudSync) return false; // user disabled sync locally; don't overwrite
+  for (const [id, remoteProfile] of Object.entries(remote.profiles)) {
+    if (remoteProfile.profileType === 'SwitchProfile' && remoteProfile.ruleList) {
+      const localProfile = local.profiles[id];
+      if (
+        localProfile?.profileType === 'SwitchProfile' &&
+        localProfile.ruleList?.rulesCache &&
+        !remoteProfile.ruleList.rulesCache
+      ) {
+        remoteProfile.ruleList.rulesCache = localProfile.ruleList.rulesCache;
+      }
+    }
+  }
   await chrome.storage.local.set({ [STORAGE_KEY]: remote });
   return true;
 }

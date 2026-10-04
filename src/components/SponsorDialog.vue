@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { Coffee, Heart, Rocket, Gem, ArrowUpRight } from '@lucide/vue';
+import { Coffee, Rocket, Gem, ArrowUpRight } from '@lucide/vue';
 import UiDialog from './ui/UiDialog.vue';
 import { useI18n } from '../core/i18n';
 import { AFDIAN_URL, SPONSOR_PLANS, afdianOrderUrl } from '../core/sponsors';
 
-defineProps<{ open: boolean; wall?: { names: string; more: number } | null }>();
+defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: 'update:open', value: boolean): void }>();
 
 const { t } = useI18n();
@@ -59,10 +59,6 @@ const openCustom = () => {
         {{ t('options.sponsorCustom') }}
       </button>
 
-      <div v-if="wall" class="pt-2.5 border-t border-slate-100 dark:border-white/5 flex items-start gap-1.5 text-[10px] leading-relaxed text-slate-400 dark:text-slate-500">
-        <Heart :size="11" class="text-pink-500 shrink-0 mt-0.5" />
-        <span>{{ wall.names }}<template v-if="wall.more > 0"> {{ t('options.sponsorWallMore').replace('{count}', String(wall.more)) }}</template></span>
-      </div>
     </div>
   </UiDialog>
 </template>

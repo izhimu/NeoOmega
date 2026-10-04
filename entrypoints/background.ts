@@ -3,7 +3,9 @@ import { initAuthManager, setTempProxyCredentials, clearTempProxyCredentials } f
 import { generateTestPacScript } from '../src/core/pac/generator';
 import { ProxyManager } from '../src/core/proxy/proxy-manager';
 import { getSettings, saveSettings, setActiveProfileId, adoptSyncSettings } from '../src/core/storage/storage';
-import type { AppSettings, ProxyServer, SwitchProfile, SwitchRule, TabNetworkError, TabRequestLog } from '../src/core/types';
+import type { AppSettings, ProxyServer, RuleListConfig, SwitchProfile, SwitchRule, TabNetworkError, TabRequestLog } from '../src/core/types';
+
+type TimeoutHandle = ReturnType<typeof setTimeout>;
 
 export default defineBackground(() => {
   initAuthManager();
@@ -54,16 +56,15 @@ export default defineBackground(() => {
     });
   }
 
-  const updateSingleRuleList = async (profileId: string, ruleListOverride?: any) => {
+  const updateSingleRuleList = async (profileId: string, ruleListOverride?: Partial<RuleListConfig>) => {
     const settings = await getSettings();
     const profile = settings.profiles[profileId];
     if (!profile || profile.profileType !== 'SwitchProfile') {
       throw new Error('未找到指定的自动切换情景模式');
     }
-    if (ruleListOverride) {
-      profile.ruleList = { ...profile.ruleList, ...ruleListOverride };
-    }
-    const ruleList = profile.ruleList;
+    const ruleList = ruleListOverride
+      ? { ...profile.ruleList, ...ruleListOverride }
+      : profile.ruleList;
     if (!ruleList || !ruleList.url?.trim()) {
       throw new Error('情景模式未配置在线规则列表 URL');
     }
@@ -73,18 +74,23 @@ export default defineBackground(() => {
       ruleList.defaultProfileId || profile.defaultProfileId || 'direct',
       settings
     );
-    ruleList.rulesCache = text.split(/\r?\n/);
-    ruleList.lastUpdate = Date.now();
-    await saveSettings(settings);
-    if (settings.activeProfileId === profileId) {
-      await ProxyManager.applyProfile(profile, settings.profiles);
+    const freshSettings = await getSettings();
+    const freshProfile = freshSettings.profiles[profileId];
+    if (freshProfile && freshProfile.profileType === 'SwitchProfile' && freshProfile.ruleList) {
+      if (ruleListOverride) Object.assign(freshProfile.ruleList, ruleListOverride);
+      freshProfile.ruleList.rulesCache = text.split(/\r?\n/);
+      freshProfile.ruleList.lastUpdate = Date.now();
+      if (freshSettings.activeProfileId === profileId) {
+        await ProxyManager.applyProfile(freshProfile, freshSettings.profiles);
+      }
+      await saveSettings(freshSettings);
     }
     return rules.length;
   };
 
   const updateAllRuleLists = async () => {
     const settings = await getSettings();
-    let changed = false;
+    const updates: Array<{ profileId: string; rulesCache: string[]; lastUpdate: number }> = [];
     for (const profile of Object.values(settings.profiles)) {
       if (profile.profileType === 'SwitchProfile' && profile.ruleList?.enabled && profile.ruleList.url) {
         try {
@@ -94,19 +100,33 @@ export default defineBackground(() => {
             profile.ruleList.defaultProfileId || profile.defaultProfileId,
             settings
           );
-          profile.ruleList.rulesCache = text.split(/\r?\n/);
-          profile.ruleList.lastUpdate = Date.now();
-          changed = true;
+          updates.push({
+            profileId: profile.id,
+            rulesCache: text.split(/\r?\n/),
+            lastUpdate: Date.now(),
+          });
         } catch (err) {
           console.error(`[NeoOmega] Failed to update rule list for ${profile.name}:`, err);
         }
       }
     }
-    if (changed) {
-      await saveSettings(settings);
-      const active = settings.profiles[settings.activeProfileId];
-      if (active) {
-        await ProxyManager.applyProfile(active, settings.profiles);
+    if (updates.length > 0) {
+      const freshSettings = await getSettings();
+      let changed = false;
+      for (const update of updates) {
+        const target = freshSettings.profiles[update.profileId];
+        if (target && target.profileType === 'SwitchProfile' && target.ruleList) {
+          target.ruleList.rulesCache = update.rulesCache;
+          target.ruleList.lastUpdate = update.lastUpdate;
+          changed = true;
+        }
+      }
+      if (changed) {
+        await saveSettings(freshSettings);
+        const active = freshSettings.profiles[freshSettings.activeProfileId];
+        if (active) {
+          await ProxyManager.applyProfile(active, freshSettings.profiles);
+        }
       }
     }
   };
@@ -173,6 +193,7 @@ export default defineBackground(() => {
         }
       } finally {
         ruleListFallbackRunning = false;
+        clearTempProxyCredentials();
         ProxyManager.invalidateCache(); // temp PAC wrote proxy settings directly; force re-apply
         try {
           // Re-read settings: user may have switched profiles during the fetch.
@@ -198,65 +219,67 @@ export default defineBackground(() => {
     if (typeof chrome === 'undefined' || !chrome.proxy?.settings) {
       throw new Error('Chrome proxy API not available');
     }
-    if (proxyTestRunning) {
+    if (proxyTestRunning || ruleListFallbackRunning) {
       throw new Error('已有代理测试进行中，请稍候 (Another proxy test is running)');
     }
-    proxyTestRunning = true;
-
     const defaultUrl = mode === 'bandwidth'
       ? 'https://speed.cloudflare.com/__down?bytes=5000000'
       : 'http://cp.cloudflare.com/generate_204';
     const effectiveTestUrl = testUrl?.trim() || defaultUrl;
 
-    let parsedUrl: URL;
-    try {
-      parsedUrl = new URL(effectiveTestUrl);
-    } catch {
-      throw new Error('无效的测试目标 URL');
-    }
-
-    const targetHost = parsedUrl.hostname;
-    const settings = await getSettings();
-    const activeProfile = settings.profiles[settings.activeProfileId];
-
-    if (proxy.auth?.username) {
-      setTempProxyCredentials(proxy.host, proxy.port, proxy.auth);
-    }
-
-    const testPac = generateTestPacScript(proxy, targetHost, activeProfile, settings.profiles);
-
-    const { promise: setPromise, resolve: setResolve, reject: setReject } = Promise.withResolvers<void>();
-    chrome.proxy.settings.set(
-      {
-        value: {
-          mode: 'pac_script',
-          pacScript: { data: testPac, mandatory: true },
-        },
-        scope: 'regular',
-      },
-      () => {
-        if (chrome.runtime.lastError) {
-          setReject(new Error(chrome.runtime.lastError.message));
-        } else {
-          setResolve();
-        }
-      }
-    );
-    await setPromise;
-
-    const { promise: delayPromise, resolve: delayResolve } = Promise.withResolvers<void>();
-    setTimeout(delayResolve, 60);
-    await delayPromise;
-
-    const urlWithBuster = new URL(effectiveTestUrl);
-    urlWithBuster.searchParams.set('_t', Date.now().toString());
-
-    const controller = new AbortController();
-    const timeoutMs = mode === 'bandwidth' ? 18000 : 8000;
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    let timeoutId: TimeoutHandle | undefined;
     const startTime = performance.now();
 
     try {
+      proxyTestRunning = true;
+
+      let parsedUrl: URL;
+      try {
+        parsedUrl = new URL(effectiveTestUrl);
+      } catch {
+        throw new Error('无效的测试目标 URL');
+      }
+
+      const targetHost = parsedUrl.hostname;
+      const settings = await getSettings();
+      const activeProfile = settings.profiles[settings.activeProfileId];
+
+      if (proxy.auth?.username) {
+        setTempProxyCredentials(proxy.host, proxy.port, proxy.auth);
+      }
+
+      const testPac = generateTestPacScript(proxy, targetHost, activeProfile, settings.profiles);
+
+      const { promise: setPromise, resolve: setResolve, reject: setReject } = Promise.withResolvers<void>();
+      chrome.proxy.settings.set(
+        {
+          value: {
+            mode: 'pac_script',
+            pacScript: { data: testPac, mandatory: true },
+          },
+          scope: 'regular',
+        },
+        () => {
+          if (chrome.runtime.lastError) {
+            setReject(new Error(chrome.runtime.lastError.message));
+          } else {
+            setResolve();
+          }
+        }
+      );
+      await setPromise;
+
+      const { promise: delayPromise, resolve: delayResolve } = Promise.withResolvers<void>();
+      setTimeout(delayResolve, 60);
+      await delayPromise;
+
+      const urlWithBuster = new URL(effectiveTestUrl);
+      urlWithBuster.searchParams.set('_t', Date.now().toString());
+
+      const controller = new AbortController();
+      const timeoutMs = mode === 'bandwidth' ? 18000 : 8000;
+      timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
       const res = await fetch(urlWithBuster.toString(), {
         method: 'GET',
         signal: controller.signal,
@@ -320,8 +343,9 @@ export default defineBackground(() => {
         testUrl: effectiveTestUrl,
       };
     } finally {
-      clearTimeout(timeoutId);
+      if (timeoutId) clearTimeout(timeoutId);
       proxyTestRunning = false;
+      clearTempProxyCredentials();
       ProxyManager.invalidateCache(); // test wrote proxy settings directly; force re-apply
       try {
         // Re-read settings: user may have switched profiles while the test ran.
@@ -343,7 +367,8 @@ export default defineBackground(() => {
   // Track network requests and errors for Side Panel & quick rule adding.
   // Listeners registered on demand only: error tracking while
   // enableErrorMonitoring is set (Popup), request log while Side Panel is open.
-  let errorTrackingOn = false;
+  // MV3 cold-start wake requires sync registration; default true until settings load.
+  let errorTrackingOn = true;
   let requestLogOn = false;
 
   const onCompletedListener = (details: chrome.webRequest.OnCompletedDetails) => {
@@ -382,6 +407,7 @@ export default defineBackground(() => {
           error: details.error,
           timestamp: Date.now(),
         });
+        if (errors.length > 50) errors.shift();
         tabErrors.set(details.tabId, errors);
       }
       const reqs = tabRequests.get(details.tabId) || [];
@@ -406,6 +432,7 @@ export default defineBackground(() => {
   // monitoring on; disconnect (panel close or SW restart) = off. The panel
   // reconnects after SW restart, replacing the old 2s heartbeat poll.
   const portTab = new Map<chrome.runtime.Port, number>();
+  const broadcastTimers = new Map<number, TimeoutHandle>();
   const pushTabData = (port: chrome.runtime.Port, tabId: number) => {
     try {
       port.postMessage({
@@ -418,9 +445,16 @@ export default defineBackground(() => {
     }
   };
   const broadcastTab = (tabId: number) => {
-    for (const [port, id] of portTab) {
-      if (id === tabId) pushTabData(port, tabId);
-    }
+    clearTimeout(broadcastTimers.get(tabId));
+    broadcastTimers.set(
+      tabId,
+      setTimeout(() => {
+        broadcastTimers.delete(tabId);
+        for (const [port, id] of portTab) {
+          if (id === tabId) pushTabData(port, tabId);
+        }
+      }, 100)
+    );
   };
 
   const syncWebRequestListeners = () => {
@@ -455,6 +489,8 @@ export default defineBackground(() => {
       if (portTab.size === 0) {
         requestLogOn = false;
         tabRequests.clear();
+        for (const timer of broadcastTimers.values()) clearTimeout(timer);
+        broadcastTimers.clear();
         syncWebRequestListeners();
       }
     });
@@ -463,12 +499,18 @@ export default defineBackground(() => {
   // WebRTC IP handling: proxy PAC never covers WebRTC UDP, so this policy
   // is the only lever against real-IP leaks (STUN host/srflx candidates).
   const applyWebRtcPolicy = (mode: AppSettings['webRtcMode']) => {
-    chrome.privacy?.network?.webRTCIPHandlingPolicy?.set({ value: mode ?? 'default' });
+    chrome.privacy?.network?.webRTCIPHandlingPolicy
+      ?.set({ value: mode ?? 'default' })
+      ?.catch(() => {});
   };
   // DNS prefetch/prerender resolve hostnames locally, bypassing the proxy's remote DNS
   const applyNetworkPrediction = (disabled: boolean | undefined) => {
-    chrome.privacy?.network?.networkPredictionEnabled?.set({ value: !disabled });
+    chrome.privacy?.network?.networkPredictionEnabled
+      ?.set({ value: !disabled })
+      ?.catch(() => {});
   };
+  // MV3 cold-start wake: register listeners synchronously before async getSettings
+  syncWebRequestListeners();
   getSettings()
     .then((s) => {
       errorTrackingOn = !!s.enableErrorMonitoring;
@@ -506,16 +548,29 @@ export default defineBackground(() => {
       .catch((err) => console.warn('[NeoOmega] sync adopt failed:', err));
   });
 
-  // Clean up tab error and request cache on tab close
+  // Clean up tab error and request cache on tab close or URL navigation
   chrome.tabs?.onRemoved.addListener((tabId) => {
     tabErrors.delete(tabId);
     tabRequests.delete(tabId);
   });
+  chrome.tabs?.onUpdated?.addListener((tabId, changeInfo) => {
+    if (changeInfo.url) {
+      tabErrors.delete(tabId);
+    }
+  });
   // Handle messages from Popup and Options
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (!message || typeof message !== 'object') return false;
     if (message.type === 'GET_TAB_ERRORS') {
       const errors = tabErrors.get(message.tabId) || [];
       sendResponse({ errors });
+      return false;
+    }
+    if (message.type === 'CLEAR_TAB_LOGS') {
+      tabErrors.delete(message.tabId);
+      tabRequests.delete(message.tabId);
+      broadcastTab(message.tabId);
+      sendResponse({ success: true });
       return false;
     }
 
@@ -549,6 +604,10 @@ export default defineBackground(() => {
             return;
           }
 
+          const rawPattern = (pattern || '').trim();
+          const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(rawPattern) || rawPattern.includes(':');
+          const rulePattern = isIp || rawPattern.startsWith('*') ? rawPattern : `*.${rawPattern}`;
+
           const switchProfile = active as SwitchProfile;
           // Add rule to top
           switchProfile.rules.unshift({
@@ -556,12 +615,11 @@ export default defineBackground(() => {
             enabled: true,
             condition: {
               conditionType: 'HostWildcardCondition',
-              pattern: `*.${pattern}`,
+              pattern: rulePattern,
             },
             profileId: profileId || 'proxy',
             note: 'Added from popup error monitor',
           });
-
           await saveSettings(settings);
           await ProxyManager.applyProfile(switchProfile, settings.profiles);
           sendResponse({ success: true });

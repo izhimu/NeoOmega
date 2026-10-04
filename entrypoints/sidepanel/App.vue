@@ -10,6 +10,7 @@ import UiButton from '../../src/components/ui/UiButton.vue';
 import UiInput from '../../src/components/ui/UiInput.vue';
 import UiBadge from '../../src/components/ui/UiBadge.vue';
 import AppLogo from '../../src/components/ui/AppLogo.vue';
+import { openOptions } from '../../src/lib/navigation';
 
 const settings = ref<AppSettings | null>(null);
 const currentTabId = ref<number>(0);
@@ -23,7 +24,17 @@ const searchQuery = ref<string>('');
 const { t, setLocale, getProfileDisplayName } = useI18n();
 let cleanThemeListener: (() => void) | null = null;
 let port: chrome.runtime.Port | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
+const handleTabActivated = () => {
+  loadCurrentTab();
+};
+
+const handleTabUpdated = (tabId: number, changeInfo: chrome.tabs.OnUpdatedInfo) => {
+  if (tabId === currentTabId.value && (changeInfo.url || changeInfo.title || changeInfo.status === 'complete')) {
+    loadCurrentTab();
+  }
+};
 const activeProfile = computed<Profile | null>(() => {
   if (!settings.value) return null;
   return settings.value.profiles[settings.value.activeProfileId] || null;
@@ -64,6 +75,8 @@ const connectPort = () => {
     port = chrome.runtime.connect({ name: 'sidepanel' });
   } catch {
     port = null;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connectPort, 1000); // extension context invalidated; keep retrying
     return;
   }
   port.onMessage.addListener((msg: { type?: string; requests?: TabRequestLog[]; errors?: TabNetworkError[] }) => {
@@ -74,7 +87,8 @@ const connectPort = () => {
   });
   port.onDisconnect.addListener(() => {
     port = null;
-    window.setTimeout(connectPort, 300);
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connectPort, 300);
   });
   subscribe();
 };
@@ -154,36 +168,34 @@ const addQuickRule = (host: string) => {
 const clearLogs = () => {
   requests.value = [];
   errors.value = [];
+  if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage && currentTabId.value > 0) {
+    chrome.runtime.sendMessage({ type: 'CLEAR_TAB_LOGS', tabId: currentTabId.value });
+  }
   toast.info(t('sidepanel.logsCleared'));
 };
 
-const openOptions = async () => {
-  if (typeof chrome === 'undefined') return;
-  const optionsUrl = chrome.runtime.getURL('options.html');
-  if (chrome.tabs?.query && chrome.tabs?.create) {
-    const tabs = await chrome.tabs.query({ url: optionsUrl });
-    if (tabs.length > 0 && tabs[0]?.id !== undefined) {
-      await chrome.tabs.update(tabs[0].id, { active: true });
-      if (tabs[0].windowId) {
-        await chrome.windows.update(tabs[0].windowId, { focused: true });
-      }
-      return;
-    }
-    await chrome.tabs.create({ url: optionsUrl });
-  } else if (chrome.runtime?.openOptionsPage) {
-    chrome.runtime.openOptionsPage();
-  }
-};
 
 onMounted(() => {
   connectPort();
   refreshState();
+  if (typeof chrome !== 'undefined' && chrome.tabs) {
+    chrome.tabs.onActivated.addListener(handleTabActivated);
+    chrome.tabs.onUpdated.addListener(handleTabUpdated);
+  }
   document.title = `${t('sidepanel.title')} - ${t('sidepanel.subtitle')}`;
   cleanThemeListener = initThemeListener(() => settings.value?.theme);
 });
 
 onUnmounted(() => {
   if (cleanThemeListener) cleanThemeListener();
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  if (typeof chrome !== 'undefined' && chrome.tabs) {
+    chrome.tabs.onActivated.removeListener(handleTabActivated);
+    chrome.tabs.onUpdated.removeListener(handleTabUpdated);
+  }
   port?.disconnect();
   port = null;
 });

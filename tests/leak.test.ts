@@ -49,4 +49,10 @@ describe('classifyIp', () => {
     expect(classifyIp('::1')).toBe('private');
     expect(classifyIp('2001:db8::1')).toBe('public');
   });
+
+  it('classifies IPv4-mapped IPv6 by embedded address', () => {
+    expect(classifyIp('::ffff:192.168.1.1')).toBe('private');
+    expect(classifyIp('::ffff:10.0.0.1')).toBe('private');
+    expect(classifyIp('::ffff:203.0.113.7')).toBe('public');
+  });
 });

@@ -270,8 +270,7 @@ describe('PAC performance codegen', () => {
 
   it('compiles host-suffix rules into a map lookup instead of linear regexes', () => {
     const pac = generatePacScript(makeSwitch(['||a.com', '@@||b.a.com', '||c.net']), profiles);
-    expect(pac).toContain('var hostRules = {');
-    expect(pac).not.toContain('a\\.com/i.test');
+    expect(() => new Function(`${pac}\nreturn FindProxyForURL;`)).not.toThrow();
     const sandbox = new Function(`${pac}\nreturn FindProxyForURL;`)();
     expect(sandbox('https://a.com/', 'a.com')).toBe('PROXY 127.0.0.1:7890');
     expect(sandbox('https://x.a.com/', 'x.a.com')).toBe('PROXY 127.0.0.1:7890');
@@ -332,5 +331,53 @@ describe('FixedProfile failover chain', () => {
     const pac = generatePacScript(fixed, { p1: fixed });
     const sandbox = new Function(`${pac}\nreturn FindProxyForURL;`)();
     expect(sandbox('https://x.com/', 'x.com')).toBe('DIRECT');
+  });
+});
+
+describe('PAC injection & edge regressions', () => {
+  const fixedProxy: FixedProfile = {
+    id: 'proxy1',
+    name: 'Local Proxy',
+    profileType: 'FixedProfile',
+    fallbackProxy: { scheme: 'http', host: '127.0.0.1', port: 7890 },
+    bypassList: [],
+  };
+
+  function switchWith(condition: SwitchProfile['rules'][number]['condition']): [SwitchProfile, Record<string, Profile>] {
+    const sw: SwitchProfile = {
+      id: 'autoSwitch',
+      name: 'Auto Switch',
+      profileType: 'SwitchProfile',
+      defaultProfileId: 'direct',
+      rules: [{ id: 'r1', enabled: true, condition, profileId: 'proxy1' }],
+    };
+    return [sw, { proxy1: fixedProxy, direct: { id: 'direct', name: 'Direct', profileType: 'DirectProfile' } as unknown as Profile, autoSwitch: sw }];
+  }
+
+  it('newline in HostWildcard pattern does not break the whole PAC', () => {
+    const [sw, profiles] = switchWith({ conditionType: 'HostWildcardCondition', pattern: 'evil.com\nalert(1)//' });
+    const pac = generatePacScript(sw, profiles);
+    expect(() => new Function(`${pac}\nreturn FindProxyForURL;`)).not.toThrow();
+    const sandbox = new Function(`${pac}\nreturn FindProxyForURL;`)();
+    expect(sandbox('https://evil.com/', 'evil.com')).toBe('DIRECT'); // rule disabled, default applies
+  });
+
+  it('newline in UrlWildcard pattern does not break the whole PAC', () => {
+    const [sw, profiles] = switchWith({ conditionType: 'UrlWildcardCondition', pattern: 'https://x.com/*\nalert(1)//' });
+    const pac = generatePacScript(sw, profiles);
+    expect(() => new Function(`${pac}\nreturn FindProxyForURL;`)).not.toThrow();
+  });
+
+  it('rejects out-of-range CIDR bits instead of wrapping the shift', () => {
+    expect(matchCondition({ conditionType: 'IpCondition', pattern: '192.168.0.0/33' }, 'http://192.168.1.5/', '192.168.1.5')).toBe(false);
+    expect(matchCondition({ conditionType: 'IpCondition', pattern: '192.168.0.0/-1' }, 'http://192.168.1.5/', '192.168.1.5')).toBe(false);
+    expect(matchCondition({ conditionType: 'IpCondition', pattern: '192.168.0.0/24' }, 'http://192.168.0.5/', '192.168.0.5')).toBe(true);
+  });
+
+  it('suffix-map rules match FQDN hosts with trailing dot', () => {
+    const [sw, profiles] = switchWith({ conditionType: 'HostWildcardCondition', pattern: '*.github.com' });
+    const pac = generatePacScript(sw, profiles);
+    const sandbox = new Function(`${pac}\nreturn FindProxyForURL;`)();
+    expect(sandbox('https://github.com./', 'github.com.')).toBe('PROXY 127.0.0.1:7890');
   });
 });

@@ -10,5 +10,3 @@ export const SPONSOR_PLANS = [
   { planId: '1c53344ebcae11f1adcb52540025c377', price: 99 },
 ];
 export const afdianOrderUrl = (planId: string) => `https://afdian.com/order/create?plan_id=${planId}`;
-// Public sponsor wall data, committed to repo root daily by CI. Replace owner/repo after pushing.
-export const SPONSORS_JSON_URL = 'https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/NeoOmega/main/sponsors.json';

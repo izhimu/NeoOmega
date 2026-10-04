@@ -33,12 +33,13 @@ import {
   Server,
   Shuffle,
 } from '@lucide/vue';
-import { AFDIAN_URL, SPONSORS_JSON_URL } from '../../src/core/sponsors';
+import { AFDIAN_URL } from '../../src/core/sponsors';
 import { Toaster, toast } from 'vue-sonner';
 import { decodeRuleListText } from '../../src/core/parsers/autoproxy';
 import { parseSwitchyOmegaBackup } from '../../src/core/parsers/switchyomega';
 import { ProxyManager } from '../../src/core/proxy/proxy-manager';
 import { DEFAULT_SETTINGS, getSettings, normalizeBypassList, saveSettings } from '../../src/core/storage/storage';
+import { addBypass as addBypassItem, removeBypass as removeBypassItem } from '../../src/core/bypass';
 import type { AppSettings, ConditionType, FixedProfile, Profile, SwitchProfile } from '../../src/core/types';
 import { useI18n, resolveLocale } from '../../src/core/i18n';
 import { applyTheme, initThemeListener } from '../../src/core/theme';
@@ -55,6 +56,8 @@ import GuideDialog from '../../src/components/GuideDialog.vue';
 import SponsorDialog from '../../src/components/SponsorDialog.vue';
 import UiBadge from '../../src/components/ui/UiBadge.vue';
 import AppLogo from '../../src/components/ui/AppLogo.vue';
+import SettingCard from '../../src/components/SettingCard.vue';
+import LatencyBadge from '../../src/components/LatencyBadge.vue';
 
 const settings = ref<AppSettings>(DEFAULT_SETTINGS);
 const activeTab = ref<string>('profile:proxy'); // 'profile:<id>' | 'backup'
@@ -140,6 +143,7 @@ const switchProfile = computed<SwitchProfile | null>(() => {
 
 const loadSettings = async () => {
   settings.value = await getSettings();
+  savedSnapshot = JSON.stringify(settings.value);
   applyTheme(settings.value.theme);
   setLocale(resolveLocale(settings.value.language));
   if (settings.value?.profiles) {
@@ -150,6 +154,13 @@ const loadSettings = async () => {
           fp.fallbackProxy = { host: '127.0.0.1', port: 7890, scheme: 'http' };
         }
         fp.bypassList = normalizeBypassList(fp.bypassList);
+        if (fp.fallbackServers) {
+          for (const srv of fp.fallbackServers) {
+            if (!(srv as any).id) {
+              (srv as any).id = crypto.randomUUID();
+            }
+          }
+        }
       } else if (profile.profileType === 'SwitchProfile') {
         const sp = profile as SwitchProfile;
         if (!sp.rules) sp.rules = [];
@@ -171,11 +182,43 @@ const loadSettings = async () => {
   }
 };
 
+let applyingOwnChange = false;
+let savedSnapshot = '';
+let saveRuleListIntervalTimer: ReturnType<typeof setTimeout> | null = null;
+
+const handleStorageChange = (changes: { [key: string]: chrome.storage.StorageChange }, areaName: string) => {
+  if (areaName === 'local' && changes['neo_omega_settings']) {
+    if (applyingOwnChange) return;
+    if (settings.value && JSON.stringify(settings.value) !== savedSnapshot) return; // unsaved edits; don't wipe
+    loadSettings();
+  }
+};
+
 const saveCurrentSettings = async () => {
-  await saveSettings(settings.value);
-  applyTheme(settings.value.theme);
-  await ProxyManager.applyCurrentActive();
-  toast.success(t('options.profileSaved'));
+  applyingOwnChange = true;
+  try {
+    await saveSettings(settings.value);
+    savedSnapshot = JSON.stringify(settings.value);
+    applyTheme(settings.value.theme);
+    await ProxyManager.applyCurrentActive();
+    toast.success(t('options.profileSaved'));
+  } catch (err) {
+    console.error('[NeoOmega] Failed to save settings:', err);
+    toast.error(t('options.profileSaveFailed'));
+  } finally {
+    setTimeout(() => {
+      applyingOwnChange = false;
+    }, 200);
+  }
+};
+
+const debounceSaveRuleListInterval = (val: string | number) => {
+  if (saveRuleListIntervalTimer) clearTimeout(saveRuleListIntervalTimer);
+  saveRuleListIntervalTimer = setTimeout(() => {
+    if (!settings.value) return;
+    settings.value.ruleListUpdateInterval = Math.max(15, Number(val) || 120);
+    saveCurrentSettings();
+  }, 500);
 };
 
 const changeLanguage = async (lang: 'auto' | 'zh_CN' | 'en') => {
@@ -215,6 +258,8 @@ const runLeakTest = async () => {
     dnsServers.value = dns;
     exitInfo.value = country;
     leakRan.value = true;
+  } catch (err) {
+    toast.error(err instanceof Error ? err.message : String(err));
   } finally {
     leakRunning.value = false;
   }
@@ -295,12 +340,18 @@ const createProfile = async () => {
 };
 
 // Switch Rule Management
+const resolveDefaultProxyId = () => {
+  const profs = settings.value?.profiles;
+  if (profs?.['proxy']) return 'proxy';
+  return Object.values(profs || {}).find((p) => p.profileType === 'FixedProfile')?.id || 'proxy';
+};
+
 const addRule = (profile: SwitchProfile) => {
   profile.rules.push({
     id: `rule_${Date.now()}`,
     enabled: true,
     condition: { conditionType: 'HostWildcardCondition', pattern: '' },
-    profileId: 'proxy',
+    profileId: resolveDefaultProxyId(),
   });
 };
 
@@ -326,7 +377,7 @@ const toggleRuleList = async (profile: SwitchProfile) => {
       id: `rulelist_${Date.now()}`,
       url: 'https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt',
       format: 'autoproxy',
-      matchProfileId: 'proxy',
+      matchProfileId: resolveDefaultProxyId(),
       defaultProfileId: profile.defaultProfileId || 'direct',
       updateIntervalMinutes: 1440,
       enabled: true,
@@ -541,34 +592,18 @@ const clearAllBypass = () => {
 };
 
 const addBypass = () => {
-  const fp = fixedProfile.value;
-  if (!fp) return;
-  if (!Array.isArray(fp.bypassList)) fp.bypassList = [];
-  fp.bypassList.push({
-    id: `bp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-    pattern: '',
-    conditionType: 'BypassCondition',
-  });
+  addBypassItem(fixedProfile.value);
 };
 
 const removeBypass = (indexOrId: number | string) => {
-  const fp = fixedProfile.value;
-  if (!fp || !Array.isArray(fp.bypassList)) return;
-  if (typeof indexOrId === 'string') {
-    const idx = fp.bypassList.findIndex((item) => item.id === indexOrId);
-    if (idx !== -1) {
-      fp.bypassList.splice(idx, 1);
-    }
-  } else if (indexOrId >= 0 && indexOrId < fp.bypassList.length) {
-    fp.bypassList.splice(indexOrId, 1);
-  }
+  removeBypassItem(fixedProfile.value, indexOrId);
 };
 
 const addFallbackServer = () => {
   const fp = fixedProfile.value;
   if (!fp) return;
   if (!Array.isArray(fp.fallbackServers)) fp.fallbackServers = [];
-  fp.fallbackServers.push({ scheme: 'http', host: '', port: 7890 });
+  fp.fallbackServers.push({ id: crypto.randomUUID(), scheme: 'http', host: '', port: 7890 } as any);
 };
 const removeFallbackServer = (idx: number) => {
   fixedProfile.value?.fallbackServers?.splice(idx, 1);
@@ -592,23 +627,6 @@ const maybePromptSponsor = async () => {
   });
 };
 
-// Sponsor wall: public sponsors.json committed to the repo daily by CI. No token, silent fail.
-const sponsorWall = ref<{ names: string; more: number } | null>(null);
-onMounted(async () => {
-  try {
-    const res = await fetch(SPONSORS_JSON_URL);
-    if (!res.ok) return;
-    const data = await res.json();
-    const list = (data?.sponsors || []) as { name: string }[];
-    if (!list.length) return;
-    sponsorWall.value = {
-      names: list.slice(0, 5).map((s) => s.name).join(' · '),
-      more: Math.max(0, list.length - 5),
-    };
-  } catch {
-    // offline / placeholder URL — wall stays hidden
-  }
-});
 const fileInput = ref<HTMLInputElement | null>(null);
 const handleFileImport = async (e: Event) => {
   const target = e.target as HTMLInputElement;
@@ -722,12 +740,19 @@ const profileTypeOptions = [
 
 onMounted(() => {
   loadSettings();
+  if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
+    chrome.storage.onChanged.addListener(handleStorageChange);
+  }
   checkGuideSeen();
   cleanThemeListener = initThemeListener(() => settings.value?.theme);
   document.title = `${t('options.brand')} - ${t('options.brandSub')}`;
 });
 onUnmounted(() => {
   if (cleanThemeListener) cleanThemeListener();
+  if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
+    chrome.storage.onChanged.removeListener(handleStorageChange);
+  }
+  if (saveRuleListIntervalTimer) clearTimeout(saveRuleListIntervalTimer);
 });
 </script>
 
@@ -818,24 +843,7 @@ onUnmounted(() => {
             :style="{ backgroundColor: settings.profiles[id]?.color || '#94a3b8', boxShadow: `0 0 6px ${settings.profiles[id]?.color || '#94a3b8'}80` }"
           />
           <span class="flex-1 text-xs truncate leading-normal">{{ getProfileDisplayName(settings.profiles[id]) || id }}</span>
-          <span
-            v-if="speedTestResults[id]"
-            class="text-[10px] font-mono px-1.5 py-0.5 rounded-md shrink-0 font-medium"
-            :class="speedTestResults[id].success
-              ? (speedTestResults[id].speedMbps !== undefined
-                  ? 'text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-200/50 dark:border-indigo-500/20'
-                  : (speedTestResults[id].latency! < 300
-                      ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10'
-                      : 'text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10'))
-              : 'text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-500/10'"
-            :title="speedTestResults[id].success ? (speedTestResults[id].speedMbps !== undefined ? `${speedTestResults[id].speedMbps} Mbps (${speedTestResults[id].speedMBps} MB/s) · ${speedTestResults[id].latency}ms` : `${speedTestResults[id].latency}ms`) : (speedTestResults[id].error || 'Error')"
-          >
-            {{ speedTestResults[id].success
-              ? (speedTestResults[id].speedMbps !== undefined
-                  ? `${speedTestResults[id].speedMbps} Mbps`
-                  : `${speedTestResults[id].latency}ms`)
-              : 'ERR' }}
-          </span>
+          <LatencyBadge :result="speedTestResults[id]" size="sm" />
           <button
             v-if="settings.activeProfileId !== id"
             type="button"
@@ -1043,7 +1051,7 @@ onUnmounted(() => {
             </div>
             <div
               v-for="(srv, idx) in (fixedProfile.fallbackServers || [])"
-              :key="idx"
+              :key="(srv as any).id || `${srv.host}:${srv.port}:${idx}`"
               class="flex gap-2 items-center"
             >
               <UiSelect v-model="srv.scheme" :options="schemeOptions" class="w-32" />
@@ -1071,32 +1079,11 @@ onUnmounted(() => {
                     <Activity :size="14" class="text-blue-600 dark:text-blue-400" />
                     {{ t('options.speedTestTitle') }}
                   </span>
-                  <template v-if="currentProfileSpeedTest">
-                    <span
-                      v-if="currentProfileSpeedTest.success"
-                      class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold font-mono border"
-                      :class="currentProfileSpeedTest.speedMBps !== undefined
-                        ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400 border-emerald-200 dark:border-emerald-500/20'
-                        : (currentProfileSpeedTest.latency! < 300
-                            ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400 border-emerald-200 dark:border-emerald-500/20'
-                            : 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400 border-amber-200 dark:border-amber-500/20')"
-                    >
-                      <span class="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                      <span v-if="currentProfileSpeedTest.speedMBps !== undefined">
-                        {{ currentProfileSpeedTest.speedMbps }} Mbps ({{ currentProfileSpeedTest.speedMBps }} MB/s)
-                      </span>
-                      <span :class="{ 'opacity-60': currentProfileSpeedTest.speedMBps !== undefined }">
-                        {{ currentProfileSpeedTest.latency }} ms
-                      </span>
-                    </span>
-                    <span
-                      v-else
-                      class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold font-mono border bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-400 border-red-200 dark:border-red-500/20"
-                    >
-                      <span class="w-1.5 h-1.5 rounded-full bg-red-500" />
-                      {{ t('options.speedTestFailed') }}
-                    </span>
-                  </template>
+                  <LatencyBadge
+                    :result="currentProfileSpeedTest"
+                    size="md"
+                    :failed-text="t('options.speedTestFailed')"
+                  />
                   <span v-if="currentProfileSpeedTest && !currentProfileSpeedTest.success" class="text-[11px] text-red-500 dark:text-red-400 truncate max-w-[200px]" :title="currentProfileSpeedTest.error">
                     ({{ currentProfileSpeedTest.error }})
                   </span>
@@ -1573,45 +1560,45 @@ onUnmounted(() => {
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6 w-full">
-          <div class="p-5 sm:p-6 bg-slate-50/60 dark:bg-slate-950/60 border border-slate-200/80 dark:border-white/10 rounded-2xl sm:rounded-3xl flex flex-col gap-3 shadow-xs">
-            <h3 class="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <Globe :size="16" class="text-blue-600 dark:text-blue-400" />
-              {{ t('options.langTitle') }}
-            </h3>
-            <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('options.langSelectDesc') }}</p>
+          <SettingCard
+            :title="t('options.langTitle')"
+            :description="t('options.langSelectDesc')"
+            :icon="Globe"
+            icon-class="text-blue-600 dark:text-blue-400"
+          >
             <UiSelect
               :model-value="settings.language || 'auto'"
               :options="langOptions"
               @update:model-value="changeLanguage($event as any)"
             />
-          </div>
+          </SettingCard>
 
-          <div class="p-5 sm:p-6 bg-slate-50/60 dark:bg-slate-950/60 border border-slate-200/80 dark:border-white/10 rounded-2xl sm:rounded-3xl flex flex-col gap-3 shadow-xs">
-            <h3 class="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <Palette :size="16" class="text-indigo-600 dark:text-indigo-400" />
-              {{ t('options.themeTitle') }}
-            </h3>
-            <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('options.themeSelectDesc') }}</p>
+          <SettingCard
+            :title="t('options.themeTitle')"
+            :description="t('options.themeSelectDesc')"
+            :icon="Palette"
+            icon-class="text-indigo-600 dark:text-indigo-400"
+          >
             <UiSelect
               v-model="settings.theme"
               :options="themeOptions"
               @update:model-value="saveCurrentSettings"
             />
-          </div>
+          </SettingCard>
 
-          <div class="p-5 sm:p-6 bg-slate-50/60 dark:bg-slate-950/60 border border-slate-200/80 dark:border-white/10 rounded-2xl sm:rounded-3xl flex flex-col gap-3 shadow-xs">
-            <h3 class="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <RefreshCw :size="16" class="text-emerald-600 dark:text-emerald-400" />
-              {{ t('options.ruleListIntervalTitle') }}
-            </h3>
-            <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('options.ruleListIntervalDesc') }}</p>
+          <SettingCard
+            :title="t('options.ruleListIntervalTitle')"
+            :description="t('options.ruleListIntervalDesc')"
+            :icon="RefreshCw"
+            icon-class="text-emerald-600 dark:text-emerald-400"
+          >
             <UiInput
               type="number"
               min="15"
               :model-value="settings.ruleListUpdateInterval ?? 120"
-              @update:model-value="settings.ruleListUpdateInterval = Math.max(15, Number($event) || 120); saveCurrentSettings()"
+              @update:model-value="debounceSaveRuleListInterval($event)"
             />
-          </div>
+          </SettingCard>
 
         </div>
       </div>
@@ -1632,25 +1619,25 @@ onUnmounted(() => {
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6 w-full">
-          <div class="p-5 sm:p-6 bg-slate-50/60 dark:bg-slate-950/60 border border-slate-200/80 dark:border-white/10 rounded-2xl sm:rounded-3xl flex flex-col gap-3 shadow-xs">
-            <h3 class="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <Shield :size="16" class="text-rose-600 dark:text-rose-400" />
-              {{ t('options.webRtcTitle') }}
-            </h3>
-            <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('options.webRtcDesc') }}</p>
+          <SettingCard
+            :title="t('options.webRtcTitle')"
+            :description="t('options.webRtcDesc')"
+            :icon="Shield"
+            icon-class="text-rose-600 dark:text-rose-400"
+          >
             <UiSelect
               :model-value="settings.webRtcMode || 'default'"
               :options="webRtcOptions"
               @update:model-value="settings.webRtcMode = $event as any; saveCurrentSettings()"
             />
-          </div>
+          </SettingCard>
 
-          <div class="p-5 sm:p-6 bg-slate-50/60 dark:bg-slate-950/60 border border-slate-200/80 dark:border-white/10 rounded-2xl sm:rounded-3xl flex flex-col gap-3 shadow-xs">
-            <h3 class="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <Globe :size="16" class="text-sky-600 dark:text-sky-400" />
-              {{ t('options.dnsPrefetchTitle') }}
-            </h3>
-            <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('options.dnsPrefetchDesc') }}</p>
+          <SettingCard
+            :title="t('options.dnsPrefetchTitle')"
+            :description="t('options.dnsPrefetchDesc')"
+            :icon="Globe"
+            icon-class="text-sky-600 dark:text-sky-400"
+          >
             <label class="flex items-center gap-2 cursor-pointer text-sm text-slate-700 dark:text-slate-300">
               <UiSwitch
                 :checked="settings.disableNetworkPrediction"
@@ -1658,7 +1645,7 @@ onUnmounted(() => {
               />
               {{ t('options.dnsPrefetchSwitch') }}
             </label>
-          </div>
+          </SettingCard>
         </div>
 
         <!-- IP Leak Test -->
@@ -1743,12 +1730,12 @@ onUnmounted(() => {
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6 w-full">
-          <div class="p-5 sm:p-6 bg-slate-50/60 dark:bg-slate-950/60 border border-slate-200/80 dark:border-white/10 rounded-2xl sm:rounded-3xl flex flex-col gap-3 shadow-xs">
-            <h3 class="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <Cloud :size="16" class="text-sky-600 dark:text-sky-400" />
-              {{ t('options.cloudSyncTitle') }}
-            </h3>
-            <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('options.cloudSyncDesc') }}</p>
+          <SettingCard
+            :title="t('options.cloudSyncTitle')"
+            :description="t('options.cloudSyncDesc')"
+            :icon="Cloud"
+            icon-class="text-sky-600 dark:text-sky-400"
+          >
             <label class="flex items-center gap-2 cursor-pointer text-sm text-slate-700 dark:text-slate-300">
               <UiSwitch
                 :checked="settings.enableCloudSync"
@@ -1756,32 +1743,32 @@ onUnmounted(() => {
               />
               {{ t('options.cloudSyncTitle') }}
             </label>
-          </div>
+          </SettingCard>
 
-          <div class="p-5 sm:p-6 bg-slate-50/60 dark:bg-slate-950/60 border border-slate-200/80 dark:border-white/10 rounded-2xl sm:rounded-3xl flex flex-col gap-3 shadow-xs">
-            <h3 class="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <Download :size="16" class="text-blue-600 dark:text-blue-400" />
-              {{ t('options.exportTitle') }}
-            </h3>
-            <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('options.exportDesc') }}</p>
+          <SettingCard
+            :title="t('options.exportTitle')"
+            :description="t('options.exportDesc')"
+            :icon="Download"
+            icon-class="text-blue-600 dark:text-blue-400"
+          >
             <UiButton variant="primary" size="sm" class="self-start mt-2" @click="exportBackup">
               <Download :size="14" />
               {{ t('options.exportBtn') }}
             </UiButton>
-          </div>
+          </SettingCard>
 
-          <div class="p-5 sm:p-6 bg-slate-50/60 dark:bg-slate-950/60 border border-slate-200/80 dark:border-white/10 rounded-2xl sm:rounded-3xl flex flex-col gap-3 shadow-xs">
-            <h3 class="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <Upload :size="16" class="text-indigo-600 dark:text-indigo-400" />
-              {{ t('options.importTitle') }}
-            </h3>
-            <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('options.importDesc') }}</p>
+          <SettingCard
+            :title="t('options.importTitle')"
+            :description="t('options.importDesc')"
+            :icon="Upload"
+            icon-class="text-indigo-600 dark:text-indigo-400"
+          >
             <UiButton variant="outline" size="sm" type="button" class="self-start mt-2" @click="fileInput?.click()">
               <Upload :size="14" />
               {{ t('options.importBtn') }}
             </UiButton>
             <input ref="fileInput" type="file" accept=".bak,.json" class="hidden" @change="handleFileImport" />
-          </div>
+          </SettingCard>
         </div>
       </div>
     </main>
@@ -1913,7 +1900,7 @@ onUnmounted(() => {
     </UiDialog>
 
     <GuideDialog v-model:open="showGuide" />
+    <SponsorDialog v-model:open="showSponsor" />
 
-    <SponsorDialog v-model:open="showSponsor" :wall="sponsorWall" />
   </div>
 </template>

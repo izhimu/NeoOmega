@@ -46,7 +46,7 @@ export function findProxyCredentials(
 
       for (const server of servers) {
         if (
-          server &&
+          server?.host &&
           server.host.toLowerCase() === host.toLowerCase() &&
           server.port === port &&
           server.auth?.username

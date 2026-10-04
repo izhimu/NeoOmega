@@ -2,7 +2,6 @@ html, body {
   margin: 0;
   padding: 0;
   width: 100%;
-  min-width: 800px;
   min-height: 600px;
   -webkit-font-smoothing: antialiased;
 }

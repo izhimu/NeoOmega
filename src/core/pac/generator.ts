@@ -12,19 +12,27 @@ import { conditionToPacCode } from './matcher';
 export function formatProxyDirective(server?: ProxyServer): string {
   if (!server) return 'DIRECT';
   const { scheme, host, port } = server;
+  const formattedHost = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
   switch (scheme) {
     case 'https':
-      return `HTTPS ${host}:${port}`;
+      return `HTTPS ${formattedHost}:${port}`;
     case 'http':
-      return `PROXY ${host}:${port}`;
+      return `PROXY ${formattedHost}:${port}`;
     case 'socks5':
-      return `SOCKS5 ${host}:${port}; SOCKS ${host}:${port}`;
+      return `SOCKS5 ${formattedHost}:${port}; SOCKS ${formattedHost}:${port}`;
     case 'socks4':
-      return `SOCKS ${host}:${port}`;
+      return `SOCKS ${formattedHost}:${port}`;
     case 'direct':
     default:
       return 'DIRECT';
   }
+}
+
+function formatServerChain(primary?: ProxyServer, fallbacks: ProxyServer[] = []): string {
+  const chain = [primary, ...fallbacks]
+    .filter((s): s is ProxyServer => !!s?.host)
+    .map(formatProxyDirective);
+  return chain.length ? chain.join('; ') : 'DIRECT';
 }
 
 /**
@@ -33,12 +41,8 @@ export function formatProxyDirective(server?: ProxyServer): string {
  */
 export function formatFixedChain(profile: FixedProfile): string {
   const primary = profile.fallbackProxy || profile.proxyForHttps || profile.proxyForHttp;
-  const chain = [primary, ...(profile.fallbackServers ?? [])]
-    .filter((s): s is ProxyServer => !!s?.host)
-    .map(formatProxyDirective);
-  return chain.length ? chain.join('; ') : 'DIRECT';
+  return formatServerChain(primary, profile.fallbackServers);
 }
-
 /**
  * Resolve target profile for virtual profiles and aliases
  */
@@ -91,6 +95,7 @@ export function generateFixedPacScript(profile: FixedProfile): string {
   const lines: string[] = [
     'function FindProxyForURL(url, host) {',
     '  "use strict";',
+    '  host = host.replace(/\\.$/, "");', // FQDN trailing root dot
   ];
 
   // 1. Bypass rules
@@ -103,15 +108,16 @@ export function generateFixedPacScript(profile: FixedProfile): string {
   const hasHttp = !!profile.proxyForHttp;
   const hasHttps = !!profile.proxyForHttps;
   const hasFtp = !!profile.proxyForFtp;
+  const fallbacks = profile.fallbackServers ?? [];
 
   if (hasHttps) {
-    lines.push(`  if (url.substring(0, 6) === "https:") return ${JSON.stringify(formatProxyDirective(profile.proxyForHttps))};`);
+    lines.push(`  if (url.substring(0, 6) === "https:") return ${JSON.stringify(formatServerChain(profile.proxyForHttps, fallbacks))};`);
   }
   if (hasHttp) {
-    lines.push(`  if (url.substring(0, 5) === "http:") return ${JSON.stringify(formatProxyDirective(profile.proxyForHttp))};`);
+    lines.push(`  if (url.substring(0, 5) === "http:") return ${JSON.stringify(formatServerChain(profile.proxyForHttp, fallbacks))};`);
   }
   if (hasFtp) {
-    lines.push(`  if (url.substring(0, 4) === "ftp:") return ${JSON.stringify(formatProxyDirective(profile.proxyForFtp))};`);
+    lines.push(`  if (url.substring(0, 4) === "ftp:") return ${JSON.stringify(formatServerChain(profile.proxyForFtp, fallbacks))};`);
   }
 
   // 3. Fallback
@@ -132,6 +138,7 @@ export function generateSwitchPacScript(
   const lines: string[] = [
     'function FindProxyForURL(url, host) {',
     '  "use strict";',
+    '  host = host.replace(/\\.$/, "");', // FQDN trailing root dot
   ];
 
   // Evaluate each switch rule in sequence
@@ -149,8 +156,8 @@ export function generateSwitchPacScript(
     const defaultDirective = getProfileDirective(rl.defaultProfileId || profile.defaultProfileId, profiles);
     // Dedupe + split: plain host-suffix rules ('*.example.com') go into an O(labels)
     // map lookup (longest suffix wins, whitelist wins ties); regex/url rules stay linear.
-    // Note: a suffix-map hit returns before linear whitelist regexes — overlapping
-    // url-regex whitelist vs host-suffix proxy conflicts resolve in favor of the map.
+    // Linear whitelist rules (e.g. @@ URL/regex) evaluate before suffixMap so specific
+    // exceptions take precedence over broad domain proxy rules.
     const seen = new Set<string>();
     const suffixMap = new Map<string, string>();
     const whitelistLines: string[] = [];
@@ -181,20 +188,21 @@ export function generateSwitchPacScript(
         proxyLines.push(lineCode);
       }
     }
+    lines.push(...whitelistLines);
     if (suffixMap.size > 0) {
       const entries = [...suffixMap.entries()]
         .map(([suffix, d]) => `${JSON.stringify(suffix)}:${JSON.stringify(d)}`)
         .join(',');
-      lines.push(`  var hostRules = {${entries}};`);
-      lines.push('  var hostParts = host.split(".");');
+      lines.push('  // var hostRules = { suffix map }');
+      lines.push(`  var hostRules = Object.assign(Object.create(null), {${entries}});`);
+      lines.push('  var hostParts = host.toLowerCase().split(".");');
       lines.push('  for (var i = 0; i < hostParts.length; i++) {');
       lines.push('    var hit = hostRules[hostParts.slice(i).join(".")];');
       lines.push('    if (hit) return hit;');
       lines.push('  }');
     }
-    lines.push(...whitelistLines, ...proxyLines);
+    lines.push(...proxyLines);
   }
-
   // Fallback to default profile
   const defaultDirective = getProfileDirective(profile.defaultProfileId, profiles);
   lines.push(`  return ${JSON.stringify(defaultDirective)};`);

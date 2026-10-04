@@ -26,7 +26,7 @@ export class ProxyManager {
     let target = profile;
     if (target.profileType === 'VirtualProfile') {
       const resolved = resolveProfile(target.targetProfileId, profiles);
-      if (resolved) target = resolved;
+      target = resolved || profiles['direct'] || { id: 'direct', name: 'Direct', profileType: 'DirectProfile', color: '#6b7280' };
     }
 
     const setProxy = async (value: chrome.proxy.ProxyConfig, key: string): Promise<void> => {
@@ -61,6 +61,8 @@ export class ProxyManager {
             { mode: 'pac_script', pacScript: { data: target.pacScript, mandatory: true } },
             `pacdata:${target.pacScript}`
           );
+        } else {
+          await setProxy({ mode: 'direct' }, 'direct');
         }
         break;
       }
@@ -73,6 +75,11 @@ export class ProxyManager {
           { mode: 'pac_script', pacScript: { data: pacData, mandatory: true } },
           `pacdata:${pacData}`
         );
+        break;
+      }
+
+      default: {
+        await setProxy({ mode: 'direct' }, 'direct');
         break;
       }
     }
