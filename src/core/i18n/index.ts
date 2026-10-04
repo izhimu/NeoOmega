@@ -78,6 +78,8 @@ export const messages = {
       deleteConfirmDesc: 'Are you sure you want to delete profile "{name}"? This action cannot be undone.',
       profileDeleted: 'Profile deleted successfully',
       activeBadge: 'Active',
+      applyProfile: 'Set as active profile',
+      profileApplied: 'Profile applied',
 
       // Profile Info & Color
       modalProfileName: 'Profile Name',
@@ -229,7 +231,9 @@ export const messages = {
       modalProfileType: 'Profile Type',
       modalProfileNamePlaceholder: 'e.g. My SOCKS5',
       fixedType: 'Fixed Proxy',
+      fixedTypeDesc: 'Route all traffic through one proxy server',
       switchType: 'Switch Profile (Rule-based routing)',
+      switchTypeDesc: 'Auto-route by rules; matches go via proxy',
       pacType: 'PAC Script Profile',
 
       // First-run guide
@@ -346,6 +350,8 @@ export const messages = {
       deleteConfirmDesc: '确认删除情景模式 "{name}" 吗？此操作不可撤销。',
       profileDeleted: '情景模式已删除',
       activeBadge: '当前生效',
+      applyProfile: '切换为此情景模式',
+      profileApplied: '已切换情景模式',
 
       // Profile Info & Color
       modalProfileName: '模式名称',
@@ -496,8 +502,10 @@ export const messages = {
       modalTitle: '新建情景模式',
       modalProfileType: '情景模式类型',
       modalProfileNamePlaceholder: '例如：我的代理服务器',
-      fixedType: '代理服务器 (Fixed Proxy)',
-      switchType: '自动切换模式 (Switch Profile)',
+      fixedType: '代理服务器',
+      fixedTypeDesc: '所有流量经由指定的代理服务器',
+      switchType: '自动切换模式',
+      switchTypeDesc: '按规则自动分流，命中的网站走代理',
       pacType: 'PAC 脚本模式 (PAC Profile)',
 
       // First-run guide

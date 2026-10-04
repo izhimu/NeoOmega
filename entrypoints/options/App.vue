@@ -30,6 +30,8 @@ import {
   Database,
   Heart,
   Info,
+  Server,
+  Shuffle,
 } from '@lucide/vue';
 import { AFDIAN_URL, SPONSORS_JSON_URL } from '../../src/core/sponsors';
 import { Toaster, toast } from 'vue-sonner';
@@ -83,6 +85,13 @@ const showSponsor = ref(false);
 const selectTab = (tab: string) => {
   activeTab.value = tab;
   mobileMenuOpen.value = false;
+};
+
+const applyProfile = async (id: string) => {
+  if (settings.value.activeProfileId === id) return;
+  settings.value.activeProfileId = id;
+  await saveCurrentSettings();
+  toast.success(t('options.profileApplied'));
 };
 
 const openAddModal = () => {
@@ -698,11 +707,18 @@ const webRtcOptions = computed(() => [
   { value: 'default_public_interface_only', label: t('options.webRtcPublicOnly') },
   { value: 'disable_non_proxied_udp', label: t('options.webRtcDisableUdp') },
 ]);
-
-const profileTypeOptions = computed(() => [
-  { value: 'FixedProfile', label: t('options.fixedType') },
-  { value: 'SwitchProfile', label: t('options.switchType') },
-]);
+const profileTypeOptions = [
+  {
+    value: 'FixedProfile', labelKey: 'options.fixedType', descKey: 'options.fixedTypeDesc',
+    activeCls: 'border-sky-500 bg-sky-50/80 dark:bg-sky-500/10 shadow-sm',
+    iconCls: 'bg-sky-100 dark:bg-sky-500/20 text-sky-600 dark:text-sky-400',
+  },
+  {
+    value: 'SwitchProfile', labelKey: 'options.switchType', descKey: 'options.switchTypeDesc',
+    activeCls: 'border-violet-500 bg-violet-50/80 dark:bg-violet-500/10 shadow-sm',
+    iconCls: 'bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400',
+  },
+] as const;
 
 onMounted(() => {
   loadSettings();
@@ -820,6 +836,15 @@ onUnmounted(() => {
                   : `${speedTestResults[id].latency}ms`)
               : 'ERR' }}
           </span>
+          <button
+            v-if="settings.activeProfileId !== id"
+            type="button"
+            :title="t('options.applyProfile')"
+            class="shrink-0 p-1 rounded-lg text-slate-400 dark:text-slate-500 opacity-60 md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/10 transition-all cursor-pointer"
+            @click.stop="applyProfile(id)"
+          >
+            <CheckCircle2 :size="14" />
+          </button>
           <UiBadge
             v-if="settings.activeProfileId === id"
             variant="primary"
@@ -1774,7 +1799,25 @@ onUnmounted(() => {
         </div>
         <div class="flex flex-col gap-2">
           <label class="text-xs font-semibold text-slate-700 dark:text-slate-300">{{ t('options.modalProfileType') }}</label>
-          <UiSelect v-model="newProfileType" :options="profileTypeOptions" />
+          <div class="grid grid-cols-2 gap-3">
+            <button
+              v-for="opt in profileTypeOptions"
+              :key="opt.value"
+              type="button"
+              class="flex flex-col items-center gap-1.5 px-4 py-3.5 rounded-2xl border-2 transition-all cursor-pointer"
+              :class="newProfileType === opt.value
+                ? opt.activeCls
+                : 'border-slate-200 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/20 hover:bg-slate-50 dark:hover:bg-white/5'"
+              @click="newProfileType = opt.value"
+            >
+              <span class="p-2 rounded-xl" :class="opt.iconCls">
+                <Server v-if="opt.value === 'FixedProfile'" :size="20" />
+                <Shuffle v-else :size="20" />
+              </span>
+              <span class="text-xs font-bold leading-snug text-center text-slate-800 dark:text-slate-100">{{ t(opt.labelKey) }}</span>
+              <span class="text-[11px] leading-snug text-center text-slate-500 dark:text-slate-400">{{ t(opt.descKey) }}</span>
+            </button>
+          </div>
         </div>
         <div class="flex justify-end gap-2.5 pt-4 border-t border-slate-100 dark:border-white/5">
           <UiButton variant="secondary" size="sm" @click="showAddModal = false">

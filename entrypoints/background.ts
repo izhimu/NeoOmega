@@ -3,7 +3,7 @@ import { initAuthManager, setTempProxyCredentials, clearTempProxyCredentials } f
 import { generateTestPacScript } from '../src/core/pac/generator';
 import { ProxyManager } from '../src/core/proxy/proxy-manager';
 import { getSettings, saveSettings, setActiveProfileId, adoptSyncSettings } from '../src/core/storage/storage';
-import type { AppSettings, ProxyServer, SwitchProfile, TabNetworkError, TabRequestLog } from '../src/core/types';
+import type { AppSettings, ProxyServer, SwitchProfile, SwitchRule, TabNetworkError, TabRequestLog } from '../src/core/types';
 
 export default defineBackground(() => {
   initAuthManager();
@@ -67,10 +67,11 @@ export default defineBackground(() => {
     if (!ruleList || !ruleList.url?.trim()) {
       throw new Error('情景模式未配置在线规则列表 URL');
     }
-    const { text, rules } = await fetchAndParseRuleList(
+    const { text, rules } = await fetchRuleListWithFallback(
       ruleList.url.trim(),
       ruleList.matchProfileId || 'proxy',
-      ruleList.defaultProfileId || profile.defaultProfileId || 'direct'
+      ruleList.defaultProfileId || profile.defaultProfileId || 'direct',
+      settings
     );
     ruleList.rulesCache = text.split(/\r?\n/);
     ruleList.lastUpdate = Date.now();
@@ -87,10 +88,11 @@ export default defineBackground(() => {
     for (const profile of Object.values(settings.profiles)) {
       if (profile.profileType === 'SwitchProfile' && profile.ruleList?.enabled && profile.ruleList.url) {
         try {
-          const { text } = await fetchAndParseRuleList(
+          const { text } = await fetchRuleListWithFallback(
             profile.ruleList.url,
             profile.ruleList.matchProfileId,
-            profile.ruleList.defaultProfileId || profile.defaultProfileId
+            profile.ruleList.defaultProfileId || profile.defaultProfileId,
+            settings
           );
           profile.ruleList.rulesCache = text.split(/\r?\n/);
           profile.ruleList.lastUpdate = Date.now();
@@ -105,6 +107,83 @@ export default defineBackground(() => {
       const active = settings.profiles[settings.activeProfileId];
       if (active) {
         await ProxyManager.applyProfile(active, settings.profiles);
+      }
+    }
+  };
+
+  let ruleListFallbackRunning = false;
+
+  // Direct fetch fails (e.g. GFWList unreachable without proxy): retry once,
+  // then silently route ONLY the rule-list host through the first configured
+  // Fixed proxy via a temporary PAC. Active profile is never switched.
+  const fetchRuleListWithFallback = async (
+    url: string,
+    matchProfileId: string,
+    defaultProfileId: string,
+    settings: AppSettings
+  ): Promise<{ text: string; rules: SwitchRule[] }> => {
+    try {
+      return await fetchAndParseRuleList(url, matchProfileId, defaultProfileId);
+    } catch (directErr) {
+      try {
+        return await fetchAndParseRuleList(url, matchProfileId, defaultProfileId);
+      } catch { /* fall through to proxy fallback */ }
+
+      let proxy: ProxyServer | null = null;
+      for (const id of settings.order) {
+        const p = settings.profiles[id];
+        if (p?.profileType === 'FixedProfile') {
+          const server = p.fallbackProxy || p.proxyForHttps || p.proxyForHttp || p.proxyForFtp;
+          if (server?.host) { proxy = server; break; }
+        }
+      }
+      if (
+        !proxy ||
+        typeof chrome === 'undefined' ||
+        !chrome.proxy?.settings ||
+        proxyTestRunning ||
+        ruleListFallbackRunning
+      ) {
+        throw directErr;
+      }
+
+      ruleListFallbackRunning = true;
+      try {
+        if (proxy.auth?.username) {
+          setTempProxyCredentials(proxy.host, proxy.port, proxy.auth);
+        }
+        const targetHost = new URL(url).hostname;
+        const activeProfile = settings.profiles[settings.activeProfileId];
+        const pac = generateTestPacScript(proxy, targetHost, activeProfile, settings.profiles);
+
+        const { promise: setPromise, resolve: setResolve, reject: setReject } = Promise.withResolvers<void>();
+        chrome.proxy.settings.set(
+          { value: { mode: 'pac_script', pacScript: { data: pac, mandatory: true } }, scope: 'regular' },
+          () => (chrome.runtime.lastError ? setReject(new Error(chrome.runtime.lastError.message)) : setResolve())
+        );
+        await setPromise;
+        const { promise: delayPromise, resolve: delayResolve } = Promise.withResolvers<void>();
+        setTimeout(delayResolve, 60);
+        await delayPromise;
+
+        try {
+          return await fetchAndParseRuleList(url, matchProfileId, defaultProfileId);
+        } catch {
+          throw directErr;
+        }
+      } finally {
+        ruleListFallbackRunning = false;
+        ProxyManager.invalidateCache(); // temp PAC wrote proxy settings directly; force re-apply
+        try {
+          // Re-read settings: user may have switched profiles during the fetch.
+          const fresh = await getSettings();
+          const current = fresh.profiles[fresh.activeProfileId];
+          if (current) {
+            await ProxyManager.applyProfile(current, fresh.profiles);
+          }
+        } catch (restoreErr) {
+          console.error('[NeoOmega] Failed to restore proxy after rule-list fallback:', restoreErr);
+        }
       }
     }
   };
