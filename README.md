@@ -39,6 +39,7 @@ NeoOmega/
 │   ├── popup/                   # 工具栏弹窗 (快速切换模式、当前标签页规则展示与快速加规则)
 │   ├── options/                 # 完整配置管理中心 (情景模式编辑、规则测试模拟器、备份与恢复)
 │   └── sidepanel/               # Chrome 侧边栏 (实时网络监控与规则调试)
+├── website/                     # 产品主页 (纯静态，无构建依赖)
 ├── src/
 │   ├── core/
 │   │   ├── types.ts             # 核心模型定义 (Profile, Rule, Condition, ProxyConfig)
@@ -54,6 +55,14 @@ NeoOmega/
 │   └── storage/
 │       └── storage.ts           # 类型安全的 chrome.storage 抽象与持久化驱动
 ```
+
+---
+
+## 📸 界面预览
+
+![NeoOmega 代理情景模式设置](promo-screenshots/01_proxy_profile.png)
+
+更多截图见 [promo-screenshots/](promo-screenshots/)，产品主页源码见 [website/](website/)（可直接部署为 GitHub Pages）。
 
 ---
 

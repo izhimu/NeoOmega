@@ -1,0 +1,89 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1400px; height: 560px; overflow: hidden; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: #020617;
+    color: #f8fafc;
+    position: relative;
+  }
+  /* ambient glows */
+  .glow-a { position: absolute; width: 900px; height: 900px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(14,165,233,.22) 0%, transparent 60%);
+    top: -450px; right: -200px; }
+  .glow-b { position: absolute; width: 700px; height: 700px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(56,189,248,.12) 0%, transparent 60%);
+    bottom: -400px; left: -150px; }
+  /* giant watermark N-routes */
+  .watermark { position: absolute; right: 40px; top: 50%; transform: translateY(-50%);
+    opacity: .13; }
+  .route-line { position: absolute; height: 2px;
+    background: linear-gradient(90deg, transparent, rgba(56,189,248,.5), transparent); }
+  .watermark { position: absolute; right: -30px; top: 42%; transform: translateY(-50%);
+    opacity: .10; }
+
+  .wrap { position: relative; height: 100%; display: flex; align-items: center; padding: 0 96px; z-index: 2; }
+  .left { display: flex; flex-direction: column; gap: 26px; }
+
+  .brand { display: flex; align-items: center; gap: 28px; }
+  .logo-tile {
+    width: 120px; height: 120px; border-radius: 28px;
+    background: linear-gradient(145deg, #0f172a, #020617);
+    border: 1px solid rgba(255,255,255,.14);
+    box-shadow: 0 12px 40px rgba(2,132,199,.35), inset 0 1px 0 rgba(255,255,255,.12);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .wordmark { font-size: 84px; font-weight: 800; letter-spacing: -2px; line-height: 1; }
+  .wordmark .omega { color: #38bdf8; }
+
+  .tagline { font-size: 33px; font-weight: 500; color: #cbd5e1; letter-spacing: .2px; }
+
+  .chips { display: flex; gap: 14px; }
+  .chip {
+    font-size: 21px; font-weight: 600; color: #7dd3fc;
+    padding: 10px 22px; border-radius: 999px;
+    background: rgba(14,165,233,.10);
+    border: 1px solid rgba(56,189,248,.35);
+  }
+</style>
+</head>
+<body>
+  <div class="glow-a"></div>
+  <div class="glow-b"></div>
+  <div class="route-line r1"></div>
+  <div class="route-line r2"></div>
+
+  <svg class="watermark" width="560" height="560" viewBox="0 0 32 32" fill="none">
+    <line x1="9" y1="8" x2="23" y2="24" stroke="#38bdf8" stroke-width="2.6" stroke-linecap="round"/>
+    <line x1="9" y1="8" x2="9" y2="24" stroke="#f8fafc" stroke-width="2.6" stroke-linecap="round"/>
+    <line x1="23" y1="8" x2="23" y2="24" stroke="#f8fafc" stroke-width="2.6" stroke-linecap="round"/>
+  </svg>
+
+  <div class="wrap">
+    <div class="left">
+      <div class="brand">
+        <div class="logo-tile">
+          <svg width="88" height="88" viewBox="0 0 32 32" fill="none">
+            <line x1="9" y1="8" x2="23" y2="24" stroke="#0ea5e9" stroke-width="3" stroke-opacity=".25" stroke-linecap="round"/>
+            <line x1="9" y1="8" x2="23" y2="24" stroke="#38bdf8" stroke-width="2.6" stroke-linecap="round"/>
+            <line x1="9" y1="8" x2="9" y2="24" stroke="#f8fafc" stroke-width="2.6" stroke-linecap="round"/>
+            <line x1="23" y1="8" x2="23" y2="24" stroke="#f8fafc" stroke-width="2.6" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="wordmark">Neo<span class="omega">Omega</span></div>
+      </div>
+      <div class="tagline">为 Chrome 打造的新一代代理管理与规则分流扩展</div>
+      <div class="chips">
+        <div class="chip">Manifest V3 原生</div>
+        <div class="chip">自动切换 · GFWList</div>
+        <div class="chip">PAC · SOCKS5 · HTTP</div>
+        <div class="chip">SwitchyOmega 现代重构</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>隐私权政策 — NeoOmega</title>
+<meta name="description" content="NeoOmega Chrome 扩展程序隐私权政策与数据安全承诺。">
+<link rel="icon" href="icon.png">
+<style>
+  :root {
+    --bg: #020617;
+    --panel: #0f172a;
+    --text: #f8fafc;
+    --muted: #94a3b8;
+    --soft: #cbd5e1;
+    --accent: #38bdf8;
+    --accent-deep: #0ea5e9;
+    --line: rgba(148,163,184,.14);
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    padding-bottom: 80px;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 0 24px; }
+  nav {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(2,6,23,.85); backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 48px;
+  }
+  nav .wrap { display: flex; align-items: center; gap: 12px; height: 64px; }
+  nav img { width: 30px; height: 30px; border-radius: 8px; }
+  nav .name { font-weight: 700; font-size: 17px; }
+  nav .name em { font-style: normal; color: var(--accent); }
+  nav .back { margin-left: auto; font-size: 14px; color: var(--soft); }
+  nav .back:hover { color: var(--accent); }
+  
+  header { margin-bottom: 40px; }
+  h1 { font-size: 36px; font-weight: 800; letter-spacing: -1px; margin-bottom: 12px; }
+  .meta { font-size: 14px; color: var(--muted); }
+
+  .content {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 36px 40px;
+  }
+  h2 { font-size: 20px; font-weight: 700; margin: 32px 0 16px; color: var(--text); border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+  h2:first-of-type { margin-top: 0; }
+  p { margin-bottom: 16px; color: var(--soft); font-size: 15px; }
+  ul { margin-bottom: 20px; padding-left: 20px; color: var(--soft); font-size: 15px; }
+  li { margin-bottom: 8px; }
+  li strong { color: var(--text); }
+  code { font-family: var(--mono); background: rgba(56,189,248,.12); color: var(--accent); padding: 2px 6px; border-radius: 4px; font-size: 13.5px; }
+
+  footer { margin-top: 48px; text-align: center; font-size: 13px; color: var(--muted); }
+</style>
+</head>
+<body>
+<nav>
+  <div class="wrap">
+    <a href="index.html" style="display:flex;align-items:center;gap:12px;text-decoration:none;">
+      <img src="icon.png" alt="NeoOmega">
+      <span class="name">Neo<em>Omega</em></span>
+    </a>
+    <a href="index.html" class="back">← 返回官网</a>
+  </div>
+</nav>
+
+<main class="wrap">
+  <header>
+    <h1>Privacy Policy / 隐私权政策</h1>
+    <div class="meta">最后更新日期 / Last updated: 2026-10-04</div>
+  </header>
+
+  <article class="content">
+    <h2>1. 核心承诺 / Core Privacy Promise</h2>
+    <p>NeoOmega 是开源、免翻新旧技术栈的现代化 Chrome 代理管理扩展。我们尊重您的隐私：<strong>我们不收集、不存储、不出售任何个人数据或浏览记录。</strong></p>
+    <p>NeoOmega is an open-source browser extension. We do not collect, transmit, sell, or store your personal data, web activity, or browsing history.</p>
+
+    <h2>2. 我们不收集的数据 / What We Do NOT Collect</h2>
+    <ul>
+      <li><strong>个人身份信息</strong>：不收集姓名、电子邮箱、手机号等任何个人信息。</li>
+      <li><strong>浏览数据与网络流量</strong>：不监控、不记录、不上传您的访问网址、搜索记录或任何网页内容。</li>
+      <li><strong>分析与追踪埋点</strong>：不集成任何第三方统计分析平台（无 Google Analytics、无埋点 SDK）。</li>
+      <li><strong>代理服务器认证凭据</strong>：用户填写的代理账号与密码仅加密/存放在本地设备，绝不外传。</li>
+    </ul>
+
+    <h2>3. 本地存储机制 / Local Storage</h2>
+    <ul>
+      <li><strong>纯本地存储</strong>：所有情景模式、代理分流规则、白名单均保存在浏览器本地提供的 <code>chrome.storage.local</code> 隔离沙箱中。</li>
+      <li><strong>可选 Chrome 同步</strong>：若用户主动勾选“云端同步”，数据将通过 Google 官方加密的 <code>chrome.storage.sync</code> 通道在用户自己的登录设备间流转，NeoOmega 团队无法访问。</li>
+    </ul>
+
+    <h2>4. 扩展触发的网络连接 / Network Requests</h2>
+    <p>扩展程序发起的网络请求仅限于以下用户直接配置的动作：</p>
+    <ul>
+      <li><strong>规则订阅更新</strong>：按用户设定拉取用户指定的远程 PAC 文件或 GFWList 纯文本规则。</li>
+      <li><strong>网络防泄露诊断</strong>：当用户在网络设置页手动点击“开始检测”时，直接向公共 IP 查询服务查询当前出口 IP、WebRTC 候选状态与 DNS，诊断结果仅渲染在本地页面上，不留存、不上报。</li>
+    </ul>
+
+    <h2>5. 敏感权限用途声明 / Permissions Justification</h2>
+    <ul>
+      <li><code>proxy</code>：配置 Chrome 代理转发规则。</li>
+      <li><code>storage</code>：在本地保存用户的情景模式与偏好设置。</li>
+      <li><code>alarms</code>：用于定时更新用户订阅的在线规则列表。</li>
+      <li><code>webRequest</code> &amp; <code>webRequestAuthProvider</code>：处理代理服务器密码认证，并捕获连接错误以建议分流规则。</li>
+      <li><code>sidePanel</code>：提供浏览器常驻侧边栏调试与网络诊断界面。</li>
+      <li><code>scripting</code>：在沙箱内检测 WebRTC 候选地址以防止真实 IP 泄露。</li>
+      <li><code>privacy</code>：配置 Chrome WebRTC 防泄露安全策略。</li>
+      <li><code>&lt;all_urls&gt;</code>：处理跨站代理认证握手。</li>
+    </ul>
+
+    <h2>6. 开源与监督 / Open Source Verification</h2>
+    <p>NeoOmega 源代码完全开放，用户可随时在代码仓库审查上述隐私策略的真实性与合规性。</p>
+  </article>
+
+  <footer>
+    © 2026 NeoOmega. Open source under the MIT License.
+  </footer>
+</main>
+</body>
+</html>

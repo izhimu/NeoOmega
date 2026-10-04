@@ -1,0 +1,79 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 440px; height: 280px; overflow: hidden; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+    background: #020617;
+    color: #f8fafc;
+    position: relative;
+  }
+  .glow-a { position: absolute; width: 320px; height: 320px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(14,165,233,.24) 0%, transparent 60%);
+    top: -160px; right: -80px; }
+  .glow-b { position: absolute; width: 240px; height: 240px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(56,189,248,.12) 0%, transparent 60%);
+    bottom: -140px; left: -60px; }
+  .watermark { position: absolute; right: -24px; top: 44%; transform: translateY(-50%); opacity: .10; }
+
+  .wrap { position: relative; height: 100%; display: flex; align-items: center; padding: 0 34px; z-index: 2; }
+  .left { display: flex; flex-direction: column; gap: 14px; }
+
+  .brand { display: flex; align-items: center; gap: 14px; }
+  .logo-tile {
+    width: 56px; height: 56px; border-radius: 15px;
+    background: linear-gradient(145deg, #0f172a, #020617);
+    border: 1px solid rgba(255,255,255,.14);
+    box-shadow: 0 6px 20px rgba(2,132,199,.35), inset 0 1px 0 rgba(255,255,255,.12);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .wordmark { font-size: 44px; font-weight: 800; letter-spacing: -1px; line-height: 1; }
+  .wordmark .omega { color: #38bdf8; }
+
+  .tagline { font-size: 17px; font-weight: 500; color: #cbd5e1; }
+
+  .chips { display: flex; gap: 7px; }
+  .chip {
+    font-size: 12px; font-weight: 600; color: #7dd3fc;
+    padding: 5px 10px; border-radius: 999px;
+    background: rgba(14,165,233,.10);
+    border: 1px solid rgba(56,189,248,.35);
+  }
+</style>
+</head>
+<body>
+  <div class="glow-a"></div>
+  <div class="glow-b"></div>
+
+  <svg class="watermark" width="200" height="200" viewBox="0 0 32 32" fill="none">
+    <line x1="9" y1="8" x2="23" y2="24" stroke="#38bdf8" stroke-width="2.6" stroke-linecap="round"/>
+    <line x1="9" y1="8" x2="9" y2="24" stroke="#f8fafc" stroke-width="2.6" stroke-linecap="round"/>
+    <line x1="23" y1="8" x2="23" y2="24" stroke="#f8fafc" stroke-width="2.6" stroke-linecap="round"/>
+  </svg>
+
+  <div class="wrap">
+    <div class="left">
+      <div class="brand">
+        <div class="logo-tile">
+          <svg width="42" height="42" viewBox="0 0 32 32" fill="none">
+            <line x1="9" y1="8" x2="23" y2="24" stroke="#0ea5e9" stroke-width="3" stroke-opacity=".25" stroke-linecap="round"/>
+            <line x1="9" y1="8" x2="23" y2="24" stroke="#38bdf8" stroke-width="2.6" stroke-linecap="round"/>
+            <line x1="9" y1="8" x2="9" y2="24" stroke="#f8fafc" stroke-width="2.6" stroke-linecap="round"/>
+            <line x1="23" y1="8" x2="23" y2="24" stroke="#f8fafc" stroke-width="2.6" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="wordmark">Neo<span class="omega">Omega</span></div>
+      </div>
+      <div class="tagline">新一代代理管理与规则分流扩展</div>
+      <div class="chips">
+        <div class="chip">Manifest V3</div>
+        <div class="chip">自动切换 · GFWList</div>
+        <div class="chip">PAC · SOCKS5</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

@@ -58,6 +58,7 @@ export const messages = {
       ruleAdded: 'Rule added successfully',
       addRuleFailed: 'Failed to add rule',
       quickAddProxy: '+ Proxy',
+      quickAddDirect: '+ Direct',
       clickToRetest: 'Click to re-test',
     },
     // Options
@@ -330,6 +331,7 @@ export const messages = {
       ruleAdded: '规则添加成功',
       addRuleFailed: '添加规则失败',
       quickAddProxy: '+ 代理',
+      quickAddDirect: '+ 直连',
       clickToRetest: '点击重新测速',
     },
     // Options

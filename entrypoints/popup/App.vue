@@ -241,6 +241,27 @@ const addQuickRule = (host: string) => {
   );
 };
 
+const addingSiteRule = ref(false);
+const siteRuleMsg = ref<{ ok: boolean; text: string } | null>(null);
+let siteRuleTimer: ReturnType<typeof setTimeout> | null = null;
+const canQuickRule = computed(() => !!currentTabHost.value && activeProfile.value?.profileType === 'SwitchProfile');
+
+const quickAddSite = (profileId: 'proxy' | 'direct') => {
+  if (!currentTabHost.value || addingSiteRule.value) return;
+  addingSiteRule.value = true;
+  chrome.runtime.sendMessage(
+    { type: 'ADD_HOST_RULE', pattern: currentTabHost.value, profileId },
+    async (res) => {
+      addingSiteRule.value = false;
+      const ok = !!(res && res.success);
+      siteRuleMsg.value = { ok, text: ok ? t('popup.ruleAdded') : (res?.error || t('popup.addRuleFailed')) };
+      if (ok) settings.value = await getSettings();
+      if (siteRuleTimer) clearTimeout(siteRuleTimer);
+      siteRuleTimer = setTimeout(() => { siteRuleMsg.value = null; }, 2500);
+    }
+  );
+};
+
 
 onMounted(() => {
   loadState();
@@ -290,8 +311,30 @@ onUnmounted(() => {
           </span>
         </div>
         <div class="flex items-center gap-1 shrink-0">
+          <div
+            v-if="canQuickRule"
+            class="flex items-center gap-0.5 p-0.5 rounded-full bg-white/5 border border-white/10 shadow-inner"
+            :title="siteRuleMsg?.text"
+          >
+            <button
+              class="px-1.5 py-0.5 rounded-full text-[9px] font-semibold leading-none cursor-pointer transition-all duration-150 disabled:pointer-events-none disabled:opacity-50"
+              :class="routing?.kind === 'proxy' ? 'bg-blue-500/25 text-blue-200 shadow-xs shadow-blue-500/20' : 'text-slate-500 hover:text-slate-300'"
+              :disabled="addingSiteRule"
+              @click="quickAddSite('proxy')"
+            >
+              {{ t('popup.routing.proxy') }}
+            </button>
+            <button
+              class="px-1.5 py-0.5 rounded-full text-[9px] font-semibold leading-none cursor-pointer transition-all duration-150 disabled:pointer-events-none disabled:opacity-50"
+              :class="routing?.kind === 'direct' ? 'bg-emerald-500/25 text-emerald-200 shadow-xs shadow-emerald-500/20' : 'text-slate-500 hover:text-slate-300'"
+              :disabled="addingSiteRule"
+              @click="quickAddSite('direct')"
+            >
+              {{ t('popup.routing.direct') }}
+            </button>
+          </div>
           <span
-            v-if="routing"
+            v-else-if="routing"
             class="text-[9px] px-1.5 py-0.5 rounded-full font-semibold leading-none"
             :class="routing.kind === 'direct' ? 'bg-emerald-500/20 text-emerald-300' : routing.kind === 'proxy' ? 'bg-blue-500/20 text-blue-300' : 'bg-slate-500/20 text-slate-300'"
           >
@@ -308,7 +351,8 @@ onUnmounted(() => {
       </div>
 
       <div class="flex items-center justify-between text-[10px] pt-1.5 border-t border-white/10">
-        <span class="text-slate-400">{{ t('popup.matchingProfile') }}</span>
+        <span v-if="siteRuleMsg" :class="siteRuleMsg.ok ? 'text-emerald-400' : 'text-rose-400'" class="truncate">{{ siteRuleMsg.text }}</span>
+        <span v-else class="text-slate-400">{{ t('popup.matchingProfile') }}</span>
         <div class="flex items-center gap-1.5 text-slate-200 font-medium">
           <span
             class="w-1.5 h-1.5 rounded-full shrink-0 shadow-xs"

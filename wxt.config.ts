@@ -11,7 +11,7 @@ export default defineConfig({
     name: '__MSG_extName__',
     description: '__MSG_extDesc__',
     default_locale: 'en',
-    version: '0.1.0',
+    version: '1.0.0',
     permissions: [
       'proxy',
       'storage',

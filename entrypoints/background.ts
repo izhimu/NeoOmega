@@ -618,7 +618,7 @@ export default defineBackground(() => {
               pattern: rulePattern,
             },
             profileId: profileId || 'proxy',
-            note: 'Added from popup error monitor',
+            note: 'Added from popup',
           });
           await saveSettings(settings);
           await ProxyManager.applyProfile(switchProfile, settings.profiles);

@@ -65,6 +65,8 @@ const mobileMenuOpen = ref(false);
 const { t, setLocale, getProfileDisplayName } = useI18n();
 let cleanThemeListener: (() => void) | null = null;
 
+const appVersion = chrome.runtime?.getManifest?.()?.version ? `v${chrome.runtime.getManifest().version}` : 'v1.0.0';
+
 // First-run guide
 const showGuide = ref(false);
 const GUIDE_SEEN_KEY = 'neo_omega_guide_seen';
@@ -767,7 +769,7 @@ onUnmounted(() => {
         <div class="flex flex-col">
           <span class="text-xs font-bold tracking-tight text-slate-900 dark:text-white leading-tight flex items-center gap-1">
             {{ t('options.brand') }}
-            <UiBadge variant="primary" size="sm" class="px-1 py-0 text-[8px] font-bold">v0.1</UiBadge>
+            <UiBadge variant="primary" size="sm" class="px-1 py-0 text-[8px] font-bold">{{ appVersion }}</UiBadge>
           </span>
           <span class="text-[10px] text-slate-400 dark:text-slate-500 font-medium">{{ t('options.brandSub') }}</span>
         </div>
@@ -801,7 +803,7 @@ onUnmounted(() => {
           <div class="flex flex-col">
             <span class="text-sm font-bold tracking-tight text-slate-900 dark:text-white leading-tight flex items-center gap-1.5">
               {{ t('options.brand') }}
-              <UiBadge variant="primary" size="sm" class="px-1.5 py-0 text-[9px] font-bold">v0.1</UiBadge>
+              <UiBadge variant="primary" size="sm" class="px-1.5 py-0 text-[9px] font-bold">{{ appVersion }}</UiBadge>
             </span>
             <span class="text-[11px] text-slate-400 dark:text-slate-500 font-medium">{{ t('options.brandSub') }}</span>
           </div>

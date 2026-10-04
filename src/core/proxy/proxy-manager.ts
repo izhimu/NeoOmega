@@ -104,8 +104,8 @@ export class ProxyManager {
   static async updateBadge(profile: Profile): Promise<void> {
     if (typeof chrome === 'undefined' || !chrome.action) return;
 
-    // Use profile initials (up to 3 chars)
-    const text = profile.name.slice(0, 3).toUpperCase();
+    // Use first 2 chars of profile name
+    const text = profile.name.slice(0, 2).toUpperCase();
     await chrome.action.setBadgeText({ text });
 
     if (profile.color) {
