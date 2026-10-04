@@ -60,9 +60,9 @@ NeoOmega/
 
 ## 📸 界面预览
 
-![NeoOmega 代理情景模式设置](promo-screenshots/01_proxy_profile.png)
+![NeoOmega 代理情景模式设置](screenshots/01_proxy_profile.png)
 
-更多截图见 [promo-screenshots/](promo-screenshots/)，产品主页源码见 [website/](website/)（可直接部署为 GitHub Pages）。
+更多截图见 [screenshots/](screenshots/)，商店宣传图块见 [promo/](promo/)，产品主页源码见 [website/](website/)（可直接部署为 GitHub Pages）。
 
 ---
 
