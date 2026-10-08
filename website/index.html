@@ -237,21 +237,7 @@
     font-family: var(--mono); display: flex; align-items: center; justify-content: space-between;
   }
 
-  /* install & sponsor cards */
-  .install-card {
-    margin-top: 40px; padding: 36px 40px; border-radius: 20px;
-    border: 1px solid rgba(56,189,248,.3);
-    background: linear-gradient(160deg, rgba(14,165,233,.12), rgba(15,23,42,.7));
-    display: flex; align-items: center; justify-content: space-between; gap: 32px; flex-wrap: wrap;
-    position: relative; overflow: hidden;
-  }
-  .install-card::before {
-    content: ""; position: absolute; inset: 0 0 auto 0; height: 1px;
-    background: linear-gradient(90deg, transparent, rgba(56,189,248,.7), transparent);
-  }
-  .install-info h3 { font-size: 24px; font-weight: 750; letter-spacing: -.5px; }
-  .install-info p { margin-top: 8px; color: var(--soft); font-size: 15px; max-width: 540px; }
-
+  /* sponsor card */
   #sponsor .card {
     margin-top: 40px; display: flex; align-items: center; gap: 30px; flex-wrap: wrap;
     border: 1px solid rgba(148,108,230,.35); border-radius: 20px; padding: 34px 40px;
@@ -282,11 +268,53 @@
     .shots { grid-template-columns: 1fr; }
   }
   @media (max-width: 640px) {
-    .feat-grid { grid-template-columns: 1fr; }
-    .hero { padding: 60px 0 50px; }
-    .trust-bar { gap: 14px; }
-    .install-card { padding: 26px 22px; }
-    #sponsor .card { padding: 26px 22px; }
+    .wrap { padding: 0 16px; }
+    nav .wrap { height: 56px; gap: 10px; }
+    nav .brand-link { flex-shrink: 0; }
+    nav .name { font-size: 16px; }
+    nav .links {
+      gap: 14px; font-size: 13px;
+      overflow-x: auto; white-space: nowrap;
+      scrollbar-width: none; -ms-overflow-style: none;
+    }
+    nav .links::-webkit-scrollbar { display: none; }
+
+    .hero { padding: 48px 0 36px; }
+    .hero-grid { gap: 36px; }
+    .hero h1 { font-size: clamp(32px, 8.5vw, 46px); letter-spacing: -1px; }
+    .hero p.lede { font-size: 15px; margin-top: 14px; }
+    .cta-row { margin-top: 24px; gap: 10px; }
+    .cta-row .btn { flex: 1 1 100%; justify-content: center; padding: 12px 18px; font-size: 14.5px; }
+    .trust-bar { margin-top: 24px; gap: 10px 14px; font-size: 12px; }
+
+    .interactive-shell { border-radius: 16px; }
+    .popup-header { padding: 14px 16px; }
+    .popup-body { padding: 12px; gap: 6px; }
+    .profile-tab { padding: 9px 12px; gap: 10px; }
+    .profile-name { font-size: 13px; }
+    .profile-desc { font-size: 11px; }
+    .popup-footer { padding: 10px 14px; font-size: 10px; flex-wrap: wrap; gap: 4px; }
+
+    section { padding: 56px 0; }
+    .sec-title { font-size: clamp(24px, 6.5vw, 32px); letter-spacing: -.6px; }
+    .sec-sub { font-size: 14.5px; margin-top: 10px; }
+    .feat-grid { grid-template-columns: 1fr; margin-top: 32px; gap: 14px; }
+    .feat { padding: 22px 20px; border-radius: 14px; }
+
+    .shots { margin-top: 32px; gap: 18px; }
+    .win-bar { padding: 8px 12px; gap: 8px; }
+    .win-pill { max-width: 170px; font-size: 10px; padding: 2px 8px; }
+    .win-frame figcaption { padding: 10px 14px; font-size: 12px; }
+
+    #sponsor .card { padding: 24px 18px; gap: 20px; border-radius: 16px; flex-direction: column; align-items: stretch; }
+    #sponsor .card .txt { min-width: 0; }
+    #sponsor .card h3 { font-size: 19px; }
+    #sponsor .card p { font-size: 14px; }
+    .btn-afdian { width: 100%; justify-content: center; }
+
+    footer { padding: 36px 0 48px; }
+    footer .wrap { flex-direction: column; align-items: flex-start; gap: 12px; font-size: 13px; }
+    footer .right { margin-left: 0; width: 100%; display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; }
   }
   @media (prefers-reduced-motion: reduce) {
     .packet, .live-pill .dot { animation: none; }
@@ -323,8 +351,8 @@
     <div class="links">
       <a href="#features">功能</a>
       <a href="#screenshots">截图</a>
-      <a href="#install">安装</a>
       <a href="#sponsor">赞助</a>
+      <a href="https://github.com/izhimu/NeoOmega" target="_blank" rel="noopener">GitHub</a>
       <a href="privacy.html">隐私政策</a>
     </div>
   </div>
@@ -341,13 +369,20 @@
         <h1>Neo<span class="omega">Omega</span></h1>
         <p class="lede">为 Chrome 与现代化 Chromium 打造的<b>高性能、秒响应</b>代理管理与规则分流扩展。作为 SwitchyOmega / ZeroOmega 的现代化重构接棒者，彻底告别 CoffeeScript、AngularJS 1.x 与 Grunt 旧时代架构。</p>
         <div class="cta-row">
-          <a class="btn btn-primary" href="#install">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="7 10 12 15 17 10"/>
-              <line x1="12" y1="15" x2="12" y2="3"/>
+          <a class="btn btn-primary" href="https://chromewebstore.google.com/detail/neoomega-modern-proxy-man/cjkeldmnfoomnfciapmpjadoigjhbnjc" target="_blank" rel="noopener">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="12" cy="12" r="4" fill="currentColor"/>
+              <path d="M12 2a10 10 0 0 1 8.66 5H12a5 5 0 0 0-4.52 2.84L4.1 4.9A9.98 9.98 0 0 1 12 2Z" fill="currentColor" opacity=".85"/>
+              <path d="M21.29 8H13.5a5 5 0 0 1 1.4 6.8l-4.7 8.14A10 10 0 0 0 21.29 8Z" fill="currentColor" opacity=".65"/>
+              <path d="M9.1 21.4 12.9 15a5 5 0 0 1-6.36-2.6L2.7 6.2A10 10 0 0 0 9.1 21.4Z" fill="currentColor" opacity=".4"/>
             </svg>
-            立即安装
+            Chrome 应用商店
+          </a>
+          <a class="btn btn-ghost" href="https://github.com/izhimu/NeoOmega" target="_blank" rel="noopener">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/>
+            </svg>
+            GitHub
           </a>
           <a class="btn btn-ghost" href="#features">浏览特性</a>
         </div>
@@ -499,7 +534,6 @@
         <img src="screenshots/01_proxy_profile.png" alt="代理情景模式设置界面" loading="lazy">
         <figcaption>
           <span>固定服务器配置 (SOCKS5 / HTTP) 与 Bypass 规则</span>
-          <span style="color:var(--accent);">01_proxy_profile.png</span>
         </figcaption>
       </figure>
 
@@ -511,7 +545,6 @@
         <img src="screenshots/02_switch_profile.png" alt="自动切换规则界面" loading="lazy">
         <figcaption>
           <span>自动切换规则表与 AutoProxy 在线列表</span>
-          <span style="color:var(--accent);">02_switch_profile.png</span>
         </figcaption>
       </figure>
 
@@ -523,7 +556,6 @@
         <img src="screenshots/03_network_diagnostics.png" alt="网络诊断界面" loading="lazy">
         <figcaption>
           <span>网络连通性与 WebRTC 泄露检测</span>
-          <span style="color:var(--accent);">03_network_diagnostics.png</span>
         </figcaption>
       </figure>
 
@@ -535,7 +567,6 @@
         <img src="screenshots/04_backup_migration.png" alt="备份与迁移界面" loading="lazy">
         <figcaption>
           <span>配置导入导出与 SwitchyOmega 兼容迁移</span>
-          <span style="color:var(--accent);">04_backup_migration.png</span>
         </figcaption>
       </figure>
 
@@ -547,31 +578,8 @@
         <img src="screenshots/05_dark_mode.png" alt="深色模式界面" loading="lazy">
         <figcaption>
           <span>原生暗黑模式与流畅动画反馈</span>
-          <span style="color:var(--accent);">05_dark_mode.png</span>
         </figcaption>
       </figure>
-    </div>
-  </div>
-</section>
-
-<section id="install">
-  <div class="wrap">
-    <div class="sec-label">Install</div>
-    <div class="install-card">
-      <div class="install-info">
-        <h3>一键安装体验</h3>
-        <p>推荐从 Chrome 官方网上应用店安装，享受静默无感自动更新与安全沙箱保障。上架审核通过后直达安装。</p>
-      </div>
-      <!-- 上架后把 href 替换为 Chrome 网上应用店条目 URL -->
-      <a class="btn btn-primary" href="#" rel="noopener" style="padding:15px 30px; font-size:16px;">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <circle cx="12" cy="12" r="4" fill="currentColor"/>
-          <path d="M12 2a10 10 0 0 1 8.66 5H12a5 5 0 0 0-4.52 2.84L4.1 4.9A9.98 9.98 0 0 1 12 2Z" fill="currentColor" opacity=".85"/>
-          <path d="M21.29 8H13.5a5 5 0 0 1 1.4 6.8l-4.7 8.14A10 10 0 0 0 21.29 8Z" fill="currentColor" opacity=".65"/>
-          <path d="M9.1 21.4 12.9 15a5 5 0 0 1-6.36-2.6L2.7 6.2A10 10 0 0 0 9.1 21.4Z" fill="currentColor" opacity=".4"/>
-        </svg>
-        从 Chrome 应用商店安装
-      </a>
     </div>
   </div>
 </section>
@@ -599,6 +607,7 @@
     <img src="icon.png" alt="">
     <span>NeoOmega — SwitchyOmega 的现代化重构接棒者</span>
     <span class="right">
+      <a href="https://github.com/izhimu/NeoOmega" target="_blank" rel="noopener" style="color:var(--muted);margin-right:20px;">GitHub</a>
       <a href="privacy.html" style="color:var(--muted);margin-right:20px;">隐私政策</a>
       Manifest V3 · TypeScript · Vue 3
     </span>
