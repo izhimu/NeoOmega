@@ -3,6 +3,7 @@
  */
 
 import type { RuleCondition } from '../types';
+import type { SwitchProfile } from '../types';
 
 /**
  * Convert a wildcard pattern (*, ?) to a regular expression string
@@ -143,6 +144,22 @@ export function matchCondition(condition: RuleCondition, url: string, host: stri
     default:
       return false;
   }
+}
+
+/**
+ * Match a SwitchProfile against a URL and host and return the matched profileId
+ */
+export function matchSwitchProfile(
+  profile: SwitchProfile,
+  url: string,
+  host: string
+): string {
+  for (const rule of profile.rules) {
+    if (rule.enabled && matchCondition(rule.condition, url, host)) {
+      return rule.profileId;
+    }
+  }
+  return profile.defaultProfileId;
 }
 
 /**

@@ -1616,6 +1616,20 @@ onUnmounted(() => {
               {{ t('options.failureNotificationSwitch') }}
             </label>
           </SettingCard>
+          <SettingCard
+            :title="t('options.speedRecommendationTitle')"
+            :description="t('options.speedRecommendationDesc')"
+            :icon="Zap"
+            icon-class="text-amber-500 dark:text-amber-400"
+          >
+            <label class="flex items-center gap-2 cursor-pointer text-sm text-slate-700 dark:text-slate-300">
+              <UiSwitch
+                :checked="settings.enableSpeedRecommendation ?? true"
+                @update:checked="settings.enableSpeedRecommendation = $event; saveCurrentSettings()"
+              />
+              {{ t('options.speedRecommendationSwitch') }}
+            </label>
+          </SettingCard>
 
         </div>
       </div>

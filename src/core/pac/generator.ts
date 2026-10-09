@@ -246,16 +246,16 @@ export function generatePacScript(
 }
 
 /**
- * Generate a temporary PAC script for testing a specific proxy server against a target host
+ * Generate a probe PAC script for testing a specific proxy directive against a target host
  */
-export function generateTestPacScript(
-  targetProxy: ProxyServer,
+export function generateProbePacScript(
+  directive: string,
   targetHost: string,
   currentProfile?: Profile,
   profiles: Record<string, Profile> = {}
 ): string {
-  const directive = formatProxyDirective(targetProxy);
-  const probeCondition = `if (host === ${JSON.stringify(targetHost)}) return ${JSON.stringify(directive + '; DIRECT')};`;
+  const finalDirective = directive === 'DIRECT' || directive.endsWith('; DIRECT') ? directive : `${directive}; DIRECT`;
+  const probeCondition = `if (host === ${JSON.stringify(targetHost)}) return ${JSON.stringify(finalDirective)};`;
 
   if (!currentProfile) {
     return `function FindProxyForURL(url, host) {\n  ${probeCondition}\n  return "DIRECT";\n}`;
@@ -270,4 +270,16 @@ export function generateTestPacScript(
   }
 
   return `function FindProxyForURL(url, host) {\n  ${probeCondition}\n  return "DIRECT";\n}`;
+}
+
+/**
+ * Generate a temporary PAC script for testing a specific proxy server against a target host
+ */
+export function generateTestPacScript(
+  targetProxy: ProxyServer,
+  targetHost: string,
+  currentProfile?: Profile,
+  profiles: Record<string, Profile> = {}
+): string {
+  return generateProbePacScript(formatProxyDirective(targetProxy), targetHost, currentProfile, profiles);
 }

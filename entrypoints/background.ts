@@ -1,9 +1,10 @@
 import { fetchAndParseRuleList } from '../src/core/parsers/autoproxy';
 import { initAuthManager, setTempProxyCredentials, clearTempProxyCredentials } from '../src/core/proxy/auth-manager';
-import { generateTestPacScript } from '../src/core/pac/generator';
+import { generateTestPacScript, generateProbePacScript, formatFixedChain } from '../src/core/pac/generator';
+import { matchSwitchProfile } from '../src/core/pac/matcher';
 import { ProxyManager } from '../src/core/proxy/proxy-manager';
 import { getSettings, saveSettings, setActiveProfileId, adoptSyncSettings } from '../src/core/storage/storage';
-import type { AppSettings, ProxyServer, RuleListConfig, SwitchProfile, SwitchRule, TabNetworkError, TabRequestLog } from '../src/core/types';
+import type { AppSettings, FixedProfile, Profile, ProxyAuth, ProxyServer, RuleListConfig, SwitchProfile, SwitchRule, TabNetworkError, TabRequestLog } from '../src/core/types';
 
 type TimeoutHandle = ReturnType<typeof setTimeout>;
 
@@ -161,7 +162,7 @@ export default defineBackground(() => {
         !proxy ||
         typeof chrome === 'undefined' ||
         !chrome.proxy?.settings ||
-        proxyTestRunning ||
+        userTestRunning ||
         ruleListFallbackRunning
       ) {
         throw directErr;
@@ -209,18 +210,18 @@ export default defineBackground(() => {
     }
   };
 
-  let proxyTestRunning = false;
+  let userTestQueue = Promise.resolve<any>();
+  let userTestRunning = false;
+  let speedProbeRunning = false;
+  let speedProbeAbort: AbortController | null = null;
 
-  const testProxyServer = async (
+  const executeProxyTest = async (
     proxy: ProxyServer,
     testUrl?: string,
     mode: 'latency' | 'bandwidth' = 'latency'
   ) => {
     if (typeof chrome === 'undefined' || !chrome.proxy?.settings) {
       throw new Error('Chrome proxy API not available');
-    }
-    if (proxyTestRunning || ruleListFallbackRunning) {
-      throw new Error('已有代理测试进行中，请稍候 (Another proxy test is running)');
     }
     const defaultUrl = mode === 'bandwidth'
       ? 'https://speed.cloudflare.com/__down?bytes=5000000'
@@ -231,8 +232,6 @@ export default defineBackground(() => {
     const startTime = performance.now();
 
     try {
-      proxyTestRunning = true;
-
       let parsedUrl: URL;
       try {
         parsedUrl = new URL(effectiveTestUrl);
@@ -344,7 +343,7 @@ export default defineBackground(() => {
       };
     } finally {
       if (timeoutId) clearTimeout(timeoutId);
-      proxyTestRunning = false;
+      // proxy restored below
       clearTempProxyCredentials();
       ProxyManager.invalidateCache(); // test wrote proxy settings directly; force re-apply
       try {
@@ -364,13 +363,202 @@ export default defineBackground(() => {
       }
     }
   };
+
+  const testProxyServer = async (
+    proxy: ProxyServer,
+    testUrl?: string,
+    mode: 'latency' | 'bandwidth' = 'latency'
+  ) => {
+    // Abort active background speed probe immediately to prioritize user test
+    if (speedProbeRunning && speedProbeAbort) {
+      speedProbeAbort.abort();
+      for (let i = 0; i < 6 && speedProbeRunning; i++) {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setTimeout(resolve, 50);
+        await promise;
+      }
+    }
+
+    const run = async () => {
+      userTestRunning = true;
+      try {
+        return await executeProxyTest(proxy, testUrl, mode);
+      } finally {
+        userTestRunning = false;
+      }
+    };
+
+    const next = userTestQueue.then(run, run);
+    userTestQueue = next.catch(() => {});
+    return await next;
+  };
   // Track network requests and errors for Side Panel & quick rule adding.
   // Listeners registered on demand only: error tracking while
   // enableErrorMonitoring is set (Popup), request log while Side Panel is open.
   // MV3 cold-start wake requires sync registration; default true until settings load.
   let errorTrackingOn = true;
   let failureNotificationOn = true;
+  let speedRecommendationOn = true;
   let requestLogOn = false;
+  const analyzedHostsCache = new Map<string, number>();
+
+  const probeCandidate = async (
+    candidate: { id: string; name: string; directive: string; auth?: ProxyAuth },
+    host: string,
+    activeProfile?: Profile,
+    allProfiles: Record<string, Profile> = {}
+  ): Promise<number | null> => {
+    if (typeof chrome === 'undefined' || !chrome.proxy?.settings || speedProbeAbort?.signal.aborted) return null;
+    if (candidate.auth?.username) {
+      const rawTarget = candidate.directive.replace(/^[A-Z0-9]+\s+/, '').split(';')[0].trim();
+      const [h, p] = rawTarget.split(':');
+      if (h && p) setTempProxyCredentials(h, parseInt(p, 10), candidate.auth);
+    }
+    const probePac = generateProbePacScript(candidate.directive, host, activeProfile, allProfiles);
+    const { promise: setPromise, resolve: setResolve, reject: setReject } = Promise.withResolvers<void>();
+    chrome.proxy.settings.set(
+      {
+        value: { mode: 'pac_script', pacScript: { data: probePac, mandatory: true } },
+        scope: 'regular',
+      },
+      () => {
+        if (chrome.runtime.lastError) setReject(new Error(chrome.runtime.lastError.message));
+        else setResolve();
+      }
+    );
+    try {
+      await setPromise;
+    } catch {
+      return null;
+    }
+    const { promise: delayPromise, resolve: delayResolve } = Promise.withResolvers<void>();
+    setTimeout(delayResolve, 50);
+    await delayPromise;
+    if (speedProbeAbort?.signal.aborted) return null;
+
+    const start = performance.now();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 1200);
+    const probeSignal = speedProbeAbort
+      ? AbortSignal.any([controller.signal, speedProbeAbort.signal])
+      : controller.signal;
+    try {
+      const res = await fetch(`https://${host}/`, {
+        method: 'GET',
+        signal: probeSignal,
+        cache: 'no-store',
+      });
+      clearTimeout(timer);
+      try { await res.body?.cancel(); } catch {}
+      return Math.round(performance.now() - start);
+    } catch {
+      clearTimeout(timer);
+      if (speedProbeAbort?.signal.aborted) return null;
+      try {
+        const httpCtrl = new AbortController();
+        const httpTimer = setTimeout(() => httpCtrl.abort(), 1000);
+        const httpSignal = speedProbeAbort
+          ? AbortSignal.any([httpCtrl.signal, speedProbeAbort.signal])
+          : httpCtrl.signal;
+        const httpRes = await fetch(`http://${host}/`, {
+          method: 'GET',
+          signal: httpSignal,
+          cache: 'no-store',
+        });
+        clearTimeout(httpTimer);
+        try { await httpRes.body?.cancel(); } catch {}
+        return Math.round(performance.now() - start);
+      } catch {
+        return null;
+      }
+    }
+  };
+
+  const analyzeSlowHosts = async (
+    hosts: Array<{ host: string; duration: number }>,
+    tabId?: number
+  ) => {
+    if (!speedRecommendationOn || userTestRunning || speedProbeRunning || ruleListFallbackRunning || !hosts.length || !tabId) return;
+    const settings = await getSettings();
+    const activeProfile = settings.profiles[settings.activeProfileId];
+    if (!activeProfile || activeProfile.profileType !== 'SwitchProfile') return;
+
+    const fixedCandidates = Object.values(settings.profiles).filter(
+      (p): p is FixedProfile =>
+        p.profileType === 'FixedProfile' &&
+        !!(p.fallbackProxy?.host || p.proxyForHttps?.host || p.proxyForHttp?.host)
+    );
+    if (fixedCandidates.length === 0) return;
+    const now = Date.now();
+    const target = hosts.find((h) => now - (analyzedHostsCache.get(h.host) || 0) > 600000);
+    if (!target) return;
+    analyzedHostsCache.set(target.host, now);
+
+    const currentProfileId = matchSwitchProfile(activeProfile as SwitchProfile, `https://${target.host}/`, target.host);
+
+    const candidates: Array<{ id: string; name: string; directive: string; auth?: ProxyAuth }> = [
+      { id: 'direct', name: '直连', directive: 'DIRECT' },
+      ...fixedCandidates.slice(0, 3).map((p) => ({
+        id: p.id,
+        name: p.name,
+        directive: formatFixedChain(p),
+        auth: p.fallbackProxy?.auth,
+      })),
+    ];
+
+    speedProbeRunning = true;
+    speedProbeAbort = new AbortController();
+    const probeResults: Array<{ id: string; name: string; latency: number | null }> = [];
+    try {
+      for (const cand of candidates) {
+        if (speedProbeAbort.signal.aborted || userTestRunning) break;
+        const lat = await probeCandidate(cand, target.host, activeProfile, settings.profiles);
+        probeResults.push({ id: cand.id, name: cand.name, latency: lat });
+      }
+    } finally {
+      speedProbeRunning = false;
+      speedProbeAbort = null;
+      clearTempProxyCredentials();
+      ProxyManager.invalidateCache();
+      try {
+        const fresh = await getSettings();
+        const curr = fresh.profiles[fresh.activeProfileId];
+        if (curr) await ProxyManager.applyProfile(curr, fresh.profiles);
+      } catch (err) {
+        console.warn('[NeoOmega] Restore proxy after speed probe failed:', err);
+      }
+    }
+
+    const valid = probeResults.filter((r): r is { id: string; name: string; latency: number } => typeof r.latency === 'number' && r.latency > 0);
+    if (valid.length === 0) return;
+    valid.sort((a, b) => a.latency - b.latency);
+    const best = valid[0];
+
+    if (best.id !== currentProfileId) {
+      const currentResult = valid.find((r) => r.id === currentProfileId);
+      const currentLatency = currentResult ? currentResult.latency : target.duration;
+      if (currentLatency - best.latency >= 300 && currentLatency >= best.latency * 1.3) {
+        const curProfileObj = settings.profiles[currentProfileId];
+        const curName = curProfileObj ? curProfileObj.name : (currentProfileId === 'direct' ? '直连' : currentProfileId);
+        chrome.tabs.sendMessage(
+          tabId,
+          {
+            type: 'SPEED_RECOMMENDATION',
+            recommendation: {
+              host: target.host,
+              currentProfileId,
+              currentProfileName: curName,
+              recommendedProfileId: best.id,
+              recommendedProfileName: best.name,
+              currentLatency,
+              recommendedLatency: best.latency,
+            },
+          },
+          () => void chrome.runtime.lastError
+        );
+      }
+    }
+  };
 
   const onCompletedListener = (details: chrome.webRequest.OnCompletedDetails) => {
     if (details.tabId <= 0) return;
@@ -531,6 +719,7 @@ export default defineBackground(() => {
     .then((s) => {
       errorTrackingOn = !!s.enableErrorMonitoring;
       failureNotificationOn = s.enableFailureNotification ?? true;
+      speedRecommendationOn = s.enableSpeedRecommendation ?? true;
       applyWebRtcPolicy(s.webRtcMode);
       applyNetworkPrediction(s.disableNetworkPrediction);
       syncWebRequestListeners();
@@ -543,6 +732,7 @@ export default defineBackground(() => {
     const oldMonitoring = errorTrackingOn;
     errorTrackingOn = !!(change.newValue as AppSettings | undefined)?.enableErrorMonitoring;
     failureNotificationOn = (change.newValue as AppSettings | undefined)?.enableFailureNotification ?? true;
+    speedRecommendationOn = (change.newValue as AppSettings | undefined)?.enableSpeedRecommendation ?? true;
     const oldRtc = (change.oldValue as AppSettings | undefined)?.webRtcMode ?? 'default';
     const newRtc = (change.newValue as AppSettings | undefined)?.webRtcMode ?? 'default';
     if (oldRtc !== newRtc) applyWebRtcPolicy(newRtc);
@@ -602,7 +792,63 @@ export default defineBackground(() => {
       sendResponse({ success: true });
       return false;
     }
+    if (message.type === 'APPLY_SPEED_RECOMMENDATION') {
+      (async () => {
+        try {
+          const { host, profileId } = message;
+          const settings = await getSettings();
+          const active = settings.profiles[settings.activeProfileId];
+          let targetSwitchProfile: SwitchProfile | undefined;
 
+          if (active && active.profileType === 'SwitchProfile') {
+            targetSwitchProfile = active as SwitchProfile;
+          } else {
+            targetSwitchProfile = Object.values(settings.profiles).find(
+              (p): p is SwitchProfile => p.profileType === 'SwitchProfile'
+            );
+          }
+
+          if (!targetSwitchProfile) {
+            sendResponse({ success: false, error: '未找到自动切换情景模式 (No Auto Switch profile found)' });
+            return;
+          }
+
+          const rawPattern = (host || '').trim();
+          const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(rawPattern) || rawPattern.includes(':');
+          const rulePattern = isIp || rawPattern.startsWith('*') ? rawPattern : `*.${rawPattern}`;
+          const cleanHost = rawPattern.replace(/^\*\./, '');
+          const isMatch = (p: string) => p === rulePattern || p === rawPattern || p.replace(/^\*\./, '') === cleanHost;
+
+          const existingRule = targetSwitchProfile.rules.find(
+            (r) => r.condition.conditionType === 'HostWildcardCondition' && isMatch(r.condition.pattern)
+          );
+          targetSwitchProfile.rules = targetSwitchProfile.rules.filter(
+            (r) => !(r.condition.conditionType === 'HostWildcardCondition' && isMatch(r.condition.pattern))
+          );
+          targetSwitchProfile.rules.unshift({
+            id: existingRule?.id || `r_speed_${Date.now()}`,
+            enabled: true,
+            condition: {
+              conditionType: 'HostWildcardCondition',
+              pattern: rulePattern,
+            },
+            profileId,
+            note: existingRule?.note || `Speed suggestion: ${profileId}`,
+          });
+          await saveSettings(settings);
+          if (active && active.profileType === 'SwitchProfile') {
+            await ProxyManager.applyProfile(targetSwitchProfile, settings.profiles);
+          }
+          const targetProfile = settings.profiles[profileId];
+          const targetName = targetProfile ? targetProfile.name : (profileId === 'direct' ? '直连' : profileId);
+          sendResponse({ success: true, profileName: targetName });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          sendResponse({ success: false, error: msg });
+        }
+      })();
+      return true;
+    }
 
     if (message.type === 'SWITCH_PROFILE') {
       (async () => {
@@ -636,22 +882,30 @@ export default defineBackground(() => {
           const rawPattern = (pattern || '').trim();
           const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(rawPattern) || rawPattern.includes(':');
           const rulePattern = isIp || rawPattern.startsWith('*') ? rawPattern : `*.${rawPattern}`;
+          const cleanHost = rawPattern.replace(/^\*\./, '');
+          const isMatch = (p: string) => p === rulePattern || p === rawPattern || p.replace(/^\*\./, '') === cleanHost;
 
           const switchProfile = active as SwitchProfile;
-          // Add rule to top
+          const existingRule = switchProfile.rules.find(
+            (r) => r.condition.conditionType === 'HostWildcardCondition' && isMatch(r.condition.pattern)
+          );
+
+          // Deduplicate: purge previous duplicate rules for this host and update to top
+          switchProfile.rules = switchProfile.rules.filter(
+            (r) => !(r.condition.conditionType === 'HostWildcardCondition' && isMatch(r.condition.pattern))
+          );
           switchProfile.rules.unshift({
-            id: `r_user_${Date.now()}`,
+            id: existingRule?.id || `r_user_${Date.now()}`,
             enabled: true,
             condition: {
               conditionType: 'HostWildcardCondition',
               pattern: rulePattern,
             },
             profileId: profileId || 'proxy',
-            note: 'Added from popup',
+            note: existingRule?.note || 'Added from popup',
           });
           await saveSettings(settings);
           await ProxyManager.applyProfile(switchProfile, settings.profiles);
-          const cleanHost = rawPattern.replace(/^\*\./, '');
           const targetTabId = typeof tabId === 'number' && tabId > 0 ? tabId : _sender.tab?.id;
           if (typeof targetTabId === 'number' && targetTabId > 0 && tabErrors.has(targetTabId)) {
             const cur = tabErrors.get(targetTabId)!;

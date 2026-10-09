@@ -81,6 +81,10 @@ export default defineContentScript({
           box-shadow: 0 0 6px rgba(239, 68, 68, 0.6);
           flex-shrink: 0;
         }
+        .badge-dot.speed {
+          background: #f59e0b;
+          box-shadow: 0 0 8px rgba(245, 158, 11, 0.7);
+        }
         .close-btn {
           border: none;
           background: transparent;
@@ -130,6 +134,30 @@ export default defineContentScript({
         .action-btn:disabled {
           opacity: 0.6;
           cursor: not-allowed;
+        }
+        .secondary-btn {
+          border: 1px solid rgba(148, 163, 184, 0.3);
+          background: transparent;
+          color: #64748b;
+          padding: 5px 10px;
+          border-radius: 8px;
+          font-size: 12px;
+          cursor: pointer;
+          transition: all 0.15s ease;
+        }
+        .secondary-btn:hover {
+          background: rgba(148, 163, 184, 0.1);
+          color: #334155;
+        }
+        @media (prefers-color-scheme: dark) {
+          .secondary-btn { color: #94a3b8; border-color: rgba(255, 255, 255, 0.15); }
+          .secondary-btn:hover { color: #f8fafc; background: rgba(255, 255, 255, 0.08); }
+        }
+        .speed-btn {
+          background: #d97706;
+        }
+        .speed-btn:hover {
+          background: #b45309;
         }
         .status-msg {
           font-size: 12px;
@@ -212,12 +240,12 @@ export default defineContentScript({
 
         for (const host of hosts) {
           try {
-            const res = await new Promise<{ success: boolean; error?: string }>((resolve) => {
-              chrome.runtime.sendMessage(
-                { type: 'ADD_HOST_RULE', pattern: host, profileId: 'proxy' },
-                (r) => resolve(r || { success: false })
-              );
-            });
+            const { promise: addPromise, resolve: addResolve } = Promise.withResolvers<{ success: boolean; error?: string }>();
+            chrome.runtime.sendMessage(
+              { type: 'ADD_HOST_RULE', pattern: host, profileId: 'proxy' },
+              (r) => addResolve(r || { success: false })
+            );
+            const res = await addPromise;
             if (res.success) {
               successCount++;
               failedHosts.delete(host);
@@ -252,11 +280,159 @@ export default defineContentScript({
       resetDismissTimer();
     };
 
+    interface SpeedRecommendation {
+      host: string;
+      currentProfileId: string;
+      currentProfileName: string;
+      recommendedProfileId: string;
+      recommendedProfileName: string;
+      currentLatency: number;
+      recommendedLatency: number;
+    }
+
+    const renderSpeedRecommendation = (rec: SpeedRecommendation) => {
+      createToastDom();
+      if (!toastEl) return;
+      const titleText = isZh ? 'NeoOmega 加速建议' : 'NeoOmega Speed Suggestion';
+      const bodyText = isZh
+        ? `检测到 <strong>${rec.host}</strong> 访问慢 (${rec.currentLatency}ms)，建议使用【${rec.recommendedProfileName}】(${rec.recommendedLatency}ms)`
+        : `<strong>${rec.host}</strong> is slow (${rec.currentLatency}ms). Suggest [${rec.recommendedProfileName}] (${rec.recommendedLatency}ms)`;
+      const applyText = isZh ? '应用加速' : 'Apply Speedup';
+      const dismissText = isZh ? '忽略' : 'Dismiss';
+
+      toastEl.innerHTML = `
+        <div class="header">
+          <div class="title-box">
+            <span class="badge-dot speed"></span>
+            <span>${titleText}</span>
+          </div>
+          <button class="close-btn" title="Dismiss">&times;</button>
+        </div>
+        <div class="body">${bodyText}</div>
+        <div class="actions">
+          <button class="secondary-btn">${dismissText}</button>
+          <button class="action-btn speed-btn">${applyText}</button>
+        </div>
+      `;
+
+      toastEl.querySelector('.close-btn')?.addEventListener('click', hideToast);
+      toastEl.querySelector('.secondary-btn')?.addEventListener('click', hideToast);
+
+      const actionBtn = toastEl.querySelector('.action-btn.speed-btn') as HTMLButtonElement | null;
+      actionBtn?.addEventListener('click', async () => {
+        if (!actionBtn) return;
+        actionBtn.disabled = true;
+        actionBtn.textContent = isZh ? '应用中...' : 'Applying...';
+        const { promise: applyPromise, resolve: applyResolve } = Promise.withResolvers<{ success: boolean; error?: string; profileName?: string }>();
+        chrome.runtime.sendMessage(
+          {
+            type: 'APPLY_SPEED_RECOMMENDATION',
+            host: rec.host,
+            profileId: rec.recommendedProfileId,
+          },
+          (res) => applyResolve(res || { success: false })
+        );
+
+        const res = await applyPromise;
+        const actionsEl = toastEl?.querySelector('.actions');
+        if (actionsEl) {
+          if (res.success) {
+            actionsEl.innerHTML = `<span class="status-msg">✓ ${
+              isZh ? `已添加到自动切换规则：${rec.host} → ${res.profileName || rec.recommendedProfileName}` : `Added to switch rules: ${rec.host} → ${res.profileName || rec.recommendedProfileName}`
+            }</span>`;
+            window.setTimeout(hideToast, 2800);
+          } else {
+            actionsEl.innerHTML = `<span class="status-msg err">${
+              res.error || (isZh ? '应用失败' : 'Failed')
+            }</span>`;
+            window.setTimeout(hideToast, 3500);
+          }
+        }
+      });
+
+      requestAnimationFrame(() => {
+        toastEl?.classList.add('show');
+      });
+      resetDismissTimer();
+    };
+
+    let slowAnalysisDone = false;
+    const isExcluded = (h: string) =>
+      !h ||
+      h === 'localhost' ||
+      h === '127.0.0.1' ||
+      h === '::1' ||
+      h.startsWith('192.168.') ||
+      h.startsWith('10.') ||
+      h.endsWith('.local') ||
+      h.endsWith('.internal');
+
+    const checkSlowHosts = () => {
+      if (slowAnalysisDone) return;
+      if (typeof performance === 'undefined' || !performance.getEntriesByType) return;
+      const slowMap = new Map<string, number>();
+      const THRESHOLD = 1800;
+
+      try {
+        const navs = performance.getEntriesByType('navigation') as PerformanceNavigationTiming[];
+        if (navs.length > 0) {
+          const nav = navs[0];
+          const dur = nav.duration || (nav.responseEnd - nav.startTime);
+          if (dur > THRESHOLD) {
+            const h = window.location.hostname;
+            if (h && !isExcluded(h)) slowMap.set(h, Math.round(dur));
+          }
+        }
+      } catch {}
+
+      try {
+        const resList = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
+        for (const r of resList) {
+          const dur = r.duration || (r.responseEnd - r.startTime);
+          if (dur > THRESHOLD && r.name) {
+            try {
+              const u = new URL(r.name);
+              if ((u.protocol === 'http:' || u.protocol === 'https:') && !isExcluded(u.hostname) && !slowMap.has(u.hostname)) {
+                slowMap.set(u.hostname, Math.round(dur));
+              }
+            } catch {}
+          }
+        }
+      } catch {}
+
+      if (slowMap.size > 0) {
+        slowAnalysisDone = true;
+        const topHosts = Array.from(slowMap.entries())
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 2)
+          .map(([host, duration]) => ({ host, duration }));
+
+        chrome.runtime.sendMessage(
+          {
+            type: 'ANALYZE_SLOW_HOSTS',
+            hosts: topHosts,
+            url: window.location.href,
+          },
+          () => void chrome.runtime.lastError
+        );
+      }
+    };
+
+    if (document.readyState === 'complete') {
+      window.setTimeout(checkSlowHosts, 1500);
+    } else {
+      window.addEventListener('load', () => window.setTimeout(checkSlowHosts, 1500));
+    }
+    window.setTimeout(checkSlowHosts, 4000);
+
     // Listen for real-time error notifications from background
     chrome.runtime.onMessage.addListener((message) => {
       if (message?.type === 'TAB_FAILED_RESOURCES' && message.host) {
         failedHosts.add(message.host);
         renderToast();
+      }
+      if (message?.type === 'SPEED_RECOMMENDATION' && message.recommendation) {
+        renderSpeedRecommendation(message.recommendation);
       }
     });
 

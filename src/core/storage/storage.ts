@@ -110,6 +110,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   language: 'auto',
   enableErrorMonitoring: true,
   enableFailureNotification: true,
+  enableSpeedRecommendation: true,
   ruleListUpdateInterval: 120,
   enableCloudSync: false,
   webRtcMode: 'default',

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { formatProxyDirective, generatePacScript, generateTestPacScript, resolveProfile } from '../src/core/pac/generator';
-import { matchCondition } from '../src/core/pac/matcher';
+import { formatProxyDirective, generatePacScript, generateTestPacScript, generateProbePacScript, resolveProfile } from '../src/core/pac/generator';
+import { matchCondition, matchSwitchProfile } from '../src/core/pac/matcher';
 import type { FixedProfile, Profile, ProxyServer, SwitchProfile, VirtualProfile } from '../src/core/types';
 
 describe('Condition Matcher', () => {
@@ -379,5 +379,77 @@ describe('PAC injection & edge regressions', () => {
     const pac = generatePacScript(sw, profiles);
     const sandbox = new Function(`${pac}\nreturn FindProxyForURL;`)();
     expect(sandbox('https://github.com./', 'github.com.')).toBe('PROXY 127.0.0.1:7890');
+  });
+});
+
+describe('Speed Recommendation Probes', () => {
+  it('generates probe PAC routing target host to directive and others to base script', () => {
+    const directProfile: Profile = { id: 'direct', name: 'Direct', profileType: 'DirectProfile' };
+    const probePac = generateProbePacScript('PROXY 10.0.0.1:8080', 'slow.com', directProfile);
+    const sandbox = new Function(`${probePac}\nreturn FindProxyForURL;`)();
+    expect(sandbox('https://slow.com/', 'slow.com')).toBe('PROXY 10.0.0.1:8080; DIRECT');
+    expect(sandbox('https://other.com/', 'other.com')).toBe('DIRECT');
+  });
+
+  it('matches SwitchProfile rules correctly', () => {
+    const sw: SwitchProfile = {
+      id: 'sw',
+      name: 'Switch',
+      profileType: 'SwitchProfile',
+      defaultProfileId: 'direct',
+      rules: [
+        {
+          id: 'r1',
+          enabled: true,
+          condition: { conditionType: 'HostWildcardCondition', pattern: '*.fast.com' },
+          profileId: 'proxy1',
+        },
+      ],
+    };
+    expect(matchSwitchProfile(sw, 'https://sub.fast.com/', 'sub.fast.com')).toBe('proxy1');
+    expect(matchSwitchProfile(sw, 'https://slow.com/', 'slow.com')).toBe('direct');
+  });
+
+  it('deduplicates and updates existing host rules instead of duplicating', () => {
+    const sw: SwitchProfile = {
+      id: 'sw',
+      name: 'Switch',
+      profileType: 'SwitchProfile',
+      defaultProfileId: 'direct',
+      rules: [
+        {
+          id: 'r_old_1',
+          enabled: true,
+          condition: { conditionType: 'HostWildcardCondition', pattern: '*.github.com' },
+          profileId: 'direct',
+        },
+        {
+          id: 'r_old_2',
+          enabled: true,
+          condition: { conditionType: 'HostWildcardCondition', pattern: '*.github.com' },
+          profileId: 'proxy',
+        },
+      ],
+    };
+
+    const pattern = 'github.com';
+    const rawPattern = pattern.trim();
+    const rulePattern = `*.${rawPattern}`;
+    const cleanHost = rawPattern.replace(/^\*\./, '');
+    const isMatch = (p: string) => p === rulePattern || p === rawPattern || p.replace(/^\*\./, '') === cleanHost;
+
+    sw.rules = sw.rules.filter(
+      (r) => !(r.condition.conditionType === 'HostWildcardCondition' && isMatch(r.condition.pattern))
+    );
+    sw.rules.unshift({
+      id: 'r_new',
+      enabled: true,
+      condition: { conditionType: 'HostWildcardCondition', pattern: rulePattern },
+      profileId: 'direct',
+    });
+
+    expect(sw.rules).toHaveLength(1);
+    expect(sw.rules[0].condition.pattern).toBe('*.github.com');
+    expect(sw.rules[0].profileId).toBe('direct');
   });
 });

@@ -221,11 +221,28 @@ const loadState = async () => {
   await loadLatencyCache();
   testFixedProfiles();
 };
+const reloadCurrentTab = () => {
+  if (typeof chrome === 'undefined' || !chrome.tabs?.reload) return;
+  const reload = (id: number, url?: string) => {
+    if (id > 0 && url && !url.startsWith('chrome://') && !url.startsWith('chrome-extension://') && !url.startsWith('edge://') && !url.startsWith('about:')) {
+      chrome.tabs.reload(id);
+    }
+  };
+  if (currentTabId.value > 0) {
+    reload(currentTabId.value, currentTabUrl.value);
+  } else {
+    chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+      if (tab?.id) reload(tab.id, tab.url);
+    });
+  }
+};
 
 const switchProfile = async (profileId: string) => {
   if (!settings.value || settings.value.activeProfileId === profileId) return;
   settings.value.activeProfileId = profileId;
-  chrome.runtime.sendMessage({ type: 'SWITCH_PROFILE', profileId });
+  chrome.runtime.sendMessage({ type: 'SWITCH_PROFILE', profileId }, () => {
+    reloadCurrentTab();
+  });
 };
 
 const addQuickRule = (host: string) => {
@@ -255,8 +272,10 @@ const quickAddSite = (profileId: 'proxy' | 'direct') => {
       addingSiteRule.value = false;
       const ok = !!(res && res.success);
       siteRuleMsg.value = { ok, text: ok ? t('popup.ruleAdded') : (res?.error || t('popup.addRuleFailed')) };
-      if (ok) settings.value = await getSettings();
-      if (siteRuleTimer) clearTimeout(siteRuleTimer);
+      if (ok) {
+        settings.value = await getSettings();
+        reloadCurrentTab();
+      }
       siteRuleTimer = setTimeout(() => { siteRuleMsg.value = null; }, 2500);
     }
   );
