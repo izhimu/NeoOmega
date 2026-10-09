@@ -96,10 +96,16 @@ pnpm build
 
 ## 赞助支持
 
-NeoOmega 免费且开源。如果它帮你从 SwitchyOmega / ZeroOmega 无痛迁移，欢迎请作者喝杯咖啡（支持微信/支付宝，海外用户可刷外币卡）
+NeoOmega 永久免费且开源。如果它帮助你从旧版扩展无痛迁移，欢迎请作者喝杯咖啡：
+
+| 微信赞赏 | 支付宝 |
+| :---: | :---: |
+| <img src="website/sponsor-wx.png" width="160" alt="微信赞赏码" /> | <img src="website/sponsor-alipay.png" width="160" alt="支付宝收款码" /> |
+| 微信扫码 | 支付宝扫码 |
+
+海外及信用卡用户可前往爱发电支持：
 
 [![爱发电](https://img.shields.io/badge/爱发电-支持作者-946ce6)](https://afdian.com/a/izhimu)
-
 <!-- SPONSORS:START -->
 还没有赞助者，来当第一个
 <!-- SPONSORS:END -->
