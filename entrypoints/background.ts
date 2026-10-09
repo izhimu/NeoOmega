@@ -369,6 +369,7 @@ export default defineBackground(() => {
   // enableErrorMonitoring is set (Popup), request log while Side Panel is open.
   // MV3 cold-start wake requires sync registration; default true until settings load.
   let errorTrackingOn = true;
+  let failureNotificationOn = true;
   let requestLogOn = false;
 
   const onCompletedListener = (details: chrome.webRequest.OnCompletedDetails) => {
@@ -393,6 +394,20 @@ export default defineBackground(() => {
     }
   };
 
+
+  const notifyTabOfError = (tabId: number, host: string, count: number) => {
+    if (tabId <= 0 || !errorTrackingOn || !failureNotificationOn || typeof chrome === 'undefined' || !chrome.tabs?.sendMessage) return;
+    chrome.tabs.sendMessage(
+      tabId,
+      {
+        type: 'TAB_FAILED_RESOURCES',
+        host,
+        count,
+      },
+      () => void chrome.runtime.lastError
+    );
+  };
+
   const onErrorListener = (details: chrome.webRequest.OnErrorOccurredDetails) => {
     if (details.tabId <= 0 || details.error === 'net::ERR_ABORTED') {
       return;
@@ -409,6 +424,7 @@ export default defineBackground(() => {
         });
         if (errors.length > 50) errors.shift();
         tabErrors.set(details.tabId, errors);
+        notifyTabOfError(details.tabId, urlObj.hostname, errors.length);
       }
       const reqs = tabRequests.get(details.tabId) || [];
       reqs.unshift({
@@ -514,6 +530,7 @@ export default defineBackground(() => {
   getSettings()
     .then((s) => {
       errorTrackingOn = !!s.enableErrorMonitoring;
+      failureNotificationOn = s.enableFailureNotification ?? true;
       applyWebRtcPolicy(s.webRtcMode);
       applyNetworkPrediction(s.disableNetworkPrediction);
       syncWebRequestListeners();
@@ -523,7 +540,9 @@ export default defineBackground(() => {
     if (area !== 'local') return;
     const change = changes['neo_omega_settings'];
     if (!change) return;
+    const oldMonitoring = errorTrackingOn;
     errorTrackingOn = !!(change.newValue as AppSettings | undefined)?.enableErrorMonitoring;
+    failureNotificationOn = (change.newValue as AppSettings | undefined)?.enableFailureNotification ?? true;
     const oldRtc = (change.oldValue as AppSettings | undefined)?.webRtcMode ?? 'default';
     const newRtc = (change.newValue as AppSettings | undefined)?.webRtcMode ?? 'default';
     if (oldRtc !== newRtc) applyWebRtcPolicy(newRtc);
@@ -566,6 +585,16 @@ export default defineBackground(() => {
       sendResponse({ errors });
       return false;
     }
+    if (message.type === 'GET_MY_ERRORS') {
+      if (!failureNotificationOn) {
+        sendResponse({ errors: [] });
+        return false;
+      }
+      const tabId = _sender.tab?.id || message.tabId;
+      const errors = tabId ? tabErrors.get(tabId) || [] : [];
+      sendResponse({ errors });
+      return false;
+    }
     if (message.type === 'CLEAR_TAB_LOGS') {
       tabErrors.delete(message.tabId);
       tabRequests.delete(message.tabId);
@@ -595,7 +624,7 @@ export default defineBackground(() => {
     if (message.type === 'ADD_HOST_RULE') {
       (async () => {
         try {
-          const { pattern, profileId } = message;
+          const { pattern, profileId, tabId } = message;
           const settings = await getSettings();
           const active = settings.profiles[settings.activeProfileId];
 
@@ -622,6 +651,15 @@ export default defineBackground(() => {
           });
           await saveSettings(settings);
           await ProxyManager.applyProfile(switchProfile, settings.profiles);
+          const cleanHost = rawPattern.replace(/^\*\./, '');
+          const targetTabId = typeof tabId === 'number' && tabId > 0 ? tabId : _sender.tab?.id;
+          if (typeof targetTabId === 'number' && targetTabId > 0 && tabErrors.has(targetTabId)) {
+            const cur = tabErrors.get(targetTabId)!;
+            const next = cur.filter((e) => e.host !== cleanHost && e.host !== rawPattern);
+            if (next.length > 0) tabErrors.set(targetTabId, next);
+            else tabErrors.delete(targetTabId);
+            broadcastTab(targetTabId);
+          }
           sendResponse({ success: true });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);

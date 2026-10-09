@@ -109,6 +109,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'auto',
   language: 'auto',
   enableErrorMonitoring: true,
+  enableFailureNotification: true,
   ruleListUpdateInterval: 120,
   enableCloudSync: false,
   webRtcMode: 'default',

@@ -231,7 +231,7 @@ const switchProfile = async (profileId: string) => {
 const addQuickRule = (host: string) => {
   addingRule.value = true;
   chrome.runtime.sendMessage(
-    { type: 'ADD_HOST_RULE', pattern: host, profileId: 'proxy' },
+    { type: 'ADD_HOST_RULE', pattern: host, profileId: 'proxy', tabId: currentTabId.value },
     (res) => {
       addingRule.value = false;
       if (res && res.success) {
@@ -250,7 +250,7 @@ const quickAddSite = (profileId: 'proxy' | 'direct') => {
   if (!currentTabHost.value || addingSiteRule.value) return;
   addingSiteRule.value = true;
   chrome.runtime.sendMessage(
-    { type: 'ADD_HOST_RULE', pattern: currentTabHost.value, profileId },
+    { type: 'ADD_HOST_RULE', pattern: currentTabHost.value, profileId, tabId: currentTabId.value },
     async (res) => {
       addingSiteRule.value = false;
       const ok = !!(res && res.success);

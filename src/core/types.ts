@@ -125,6 +125,7 @@ export interface AppSettings {
   theme: 'auto' | 'light' | 'dark';
   language?: 'auto' | 'zh_CN' | 'en';
   enableErrorMonitoring: boolean;
+  enableFailureNotification?: boolean; // Show in-page toast for failed resources, default true
   ruleListUpdateInterval?: number; // minutes, default 120
   enableCloudSync?: boolean; // mirror profiles into chrome.storage.sync
   webRtcMode?: WebRtcMode; // chrome.privacy IP handling policy, default 'default'

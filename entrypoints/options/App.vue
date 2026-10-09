@@ -23,6 +23,7 @@ import {
   Zap,
   Gauge,
   RefreshCw,
+  Bell,
   Cloud,
   Network,
   Languages,
@@ -1600,6 +1601,20 @@ onUnmounted(() => {
               :model-value="settings.ruleListUpdateInterval ?? 120"
               @update:model-value="debounceSaveRuleListInterval($event)"
             />
+          </SettingCard>
+          <SettingCard
+            :title="t('options.failureNotificationTitle')"
+            :description="t('options.failureNotificationDesc')"
+            :icon="Bell"
+            icon-class="text-amber-600 dark:text-amber-400"
+          >
+            <label class="flex items-center gap-2 cursor-pointer text-sm text-slate-700 dark:text-slate-300">
+              <UiSwitch
+                :checked="settings.enableFailureNotification ?? true"
+                @update:checked="settings.enableFailureNotification = $event; saveCurrentSettings()"
+              />
+              {{ t('options.failureNotificationSwitch') }}
+            </label>
           </SettingCard>
 
         </div>

@@ -153,7 +153,7 @@ const aggregatedFailedHosts = computed<AggregatedHostError[]>(() => {
 const addQuickRule = (host: string) => {
   if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) return;
   chrome.runtime.sendMessage(
-    { type: 'ADD_HOST_RULE', pattern: host, profileId: 'proxy' },
+    { type: 'ADD_HOST_RULE', pattern: host, profileId: 'proxy', tabId: currentTabId.value },
     (res) => {
       if (res && res.success) {
         toast.success(`${t('popup.ruleAdded')}: *.${host}`);
