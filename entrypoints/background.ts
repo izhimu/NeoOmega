@@ -569,6 +569,7 @@ export default defineBackground(() => {
   };
 
   const onCompletedListener = (details: chrome.webRequest.OnCompletedDetails) => {
+    clearPending(details.requestId);
     if (details.tabId <= 0) return;
     try {
       const urlObj = new URL(details.url);
@@ -604,24 +605,59 @@ export default defineBackground(() => {
     );
   };
 
+  // 5s hang detection: any request pending > 5s without headers = unreachable
+  const HANG_TIMEOUT_MS = 5000;
+  const pendingRequests = new Map<string, { tabId: number; host: string; timer: TimeoutHandle }>();
+
+  const clearPending = (requestId: string) => {
+    const p = pendingRequests.get(requestId);
+    if (p) {
+      clearTimeout(p.timer);
+      pendingRequests.delete(requestId);
+    }
+  };
+
+  const addTabError = (tabId: number, url: string, host: string, error: string) => {
+    if (tabId <= 0) return;
+    const errors = tabErrors.get(tabId) || [];
+    if (!errors.some((e) => e.host === host)) {
+      errors.push({ url, host, error, timestamp: Date.now() });
+      if (errors.length > 50) errors.shift();
+      tabErrors.set(tabId, errors);
+      notifyTabOfError(tabId, host, errors.length);
+    }
+  };
+
+  const onBeforeRequestListener = (details: chrome.webRequest.OnBeforeRequestDetails) => {
+    if (details.tabId <= 0 || !errorTrackingOn) return;
+    try {
+      const urlObj = new URL(details.url);
+      const host = urlObj.hostname;
+      if (!host) return;
+      clearPending(details.requestId);
+      const timer = setTimeout(() => {
+        pendingRequests.delete(details.requestId);
+        console.warn('[NeoOmega] Hang detected:', host, details.url);
+        addTabError(details.tabId, details.url, host, 'net::ERR_CONNECTION_HANG');
+      }, HANG_TIMEOUT_MS);
+      pendingRequests.set(details.requestId, { tabId: details.tabId, host, timer });
+    } catch {
+      // ignore invalid URLs
+    }
+  };
+
+  const onHeadersReceivedListener = (details: chrome.webRequest.OnHeadersReceivedDetails) => {
+    clearPending(details.requestId);
+  };
+
   const onErrorListener = (details: chrome.webRequest.OnErrorOccurredDetails) => {
+    clearPending(details.requestId);
     if (details.tabId <= 0 || details.error === 'net::ERR_ABORTED') {
       return;
     }
     try {
       const urlObj = new URL(details.url);
-      const errors = tabErrors.get(details.tabId) || [];
-      if (!errors.some((e) => e.host === urlObj.hostname)) {
-        errors.push({
-          url: details.url,
-          host: urlObj.hostname,
-          error: details.error,
-          timestamp: Date.now(),
-        });
-        if (errors.length > 50) errors.shift();
-        tabErrors.set(details.tabId, errors);
-        notifyTabOfError(details.tabId, urlObj.hostname, errors.length);
-      }
+      addTabError(details.tabId, details.url, urlObj.hostname, details.error);
       const reqs = tabRequests.get(details.tabId) || [];
       reqs.unshift({
         id: details.requestId,
@@ -683,6 +719,24 @@ export default defineBackground(() => {
       chrome.webRequest.onErrorOccurred.addListener(onErrorListener, { urls: ['<all_urls>'] });
     } else if (!wantError && hasError) {
       chrome.webRequest.onErrorOccurred.removeListener(onErrorListener);
+    }
+
+    // Hang detection requires onBeforeRequest + onHeadersReceived alongside errors
+    const hasBefore = chrome.webRequest.onBeforeRequest.hasListener(onBeforeRequestListener);
+    const hasHeaders = chrome.webRequest.onHeadersReceived.hasListener(onHeadersReceivedListener);
+    const hasCompletedForHang = chrome.webRequest.onCompleted.hasListener(onCompletedListener);
+    if (wantError && !hasBefore) {
+      chrome.webRequest.onBeforeRequest.addListener(onBeforeRequestListener, { urls: ['<all_urls>'] });
+      chrome.webRequest.onHeadersReceived.addListener(onHeadersReceivedListener, { urls: ['<all_urls>'] });
+    } else if (!wantError && hasBefore) {
+      chrome.webRequest.onBeforeRequest.removeListener(onBeforeRequestListener);
+      chrome.webRequest.onHeadersReceived.removeListener(onHeadersReceivedListener);
+    }
+    // onCompleted also needed to clear pending when side panel closed
+    if (wantError && !requestLogOn && !hasCompletedForHang) {
+      chrome.webRequest.onCompleted.addListener(onCompletedListener, { urls: ['<all_urls>'] });
+    } else if (!wantError && !requestLogOn && hasCompletedForHang) {
+      chrome.webRequest.onCompleted.removeListener(onCompletedListener);
     }
   };
 
@@ -766,13 +820,23 @@ export default defineBackground(() => {
   });
 
   // Clean up tab error and request cache on tab close or URL navigation
+  const purgePendingForTab = (tabId: number) => {
+    for (const [id, p] of pendingRequests) {
+      if (p.tabId === tabId) {
+        clearTimeout(p.timer);
+        pendingRequests.delete(id);
+      }
+    }
+  };
   chrome.tabs?.onRemoved.addListener((tabId) => {
     tabErrors.delete(tabId);
     tabRequests.delete(tabId);
+    purgePendingForTab(tabId);
   });
   chrome.tabs?.onUpdated?.addListener((tabId, changeInfo) => {
     if (changeInfo.url) {
       tabErrors.delete(tabId);
+      purgePendingForTab(tabId);
     }
   });
   // Handle messages from Popup and Options

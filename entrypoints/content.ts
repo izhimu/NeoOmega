@@ -33,6 +33,15 @@ export default defineContentScript({
     let toastEl: HTMLDivElement | null = null;
     let timer: number | null = null;
 
+    const LOGO_SVG = `
+      <svg viewBox="0 0 32 32" fill="none" class="app-icon" xmlns="http://www.w3.org/2000/svg">
+        <line x1="9" y1="8" x2="23" y2="24" stroke="#0ea5e9" stroke-width="3" stroke-opacity="0.3" stroke-linecap="round"/>
+        <line x1="9" y1="8" x2="23" y2="24" stroke="#0284c7" stroke-width="2.6" stroke-linecap="round"/>
+        <line x1="9" y1="8" x2="9" y2="24" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/>
+        <line x1="23" y1="8" x2="23" y2="24" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/>
+      </svg>
+    `;
+
     const createToastDom = () => {
       if (hostEl) return;
       hostEl = document.createElement('div');
@@ -42,95 +51,209 @@ export default defineContentScript({
       const style = document.createElement('style');
       style.textContent = `
         :host { all: initial; }
-        .toast {
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        .toast-wrapper {
           position: fixed;
-          top: 14px;
+          top: 16px;
           right: 20px;
           z-index: 2147483647;
           display: flex;
-          flex-direction: column;
-          gap: 10px;
-          min-width: 280px;
-          max-width: 380px;
-          padding: 12px 14px;
-          background: rgba(255, 255, 255, 0.98);
-          color: #0f172a;
-          border-radius: 14px;
-          box-shadow: 0 12px 32px -4px rgba(0, 0, 0, 0.16), 0 4px 12px -2px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(0, 0, 0, 0.08);
-          backdrop-filter: blur(16px);
-          -webkit-backdrop-filter: blur(16px);
-          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-          font-size: 13px;
-          line-height: 1.4;
-          opacity: 0;
-          transform: translateY(-16px) scale(0.96);
-          transform-origin: top right;
-          transition: opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1), transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+          justify-content: flex-end;
+          align-items: flex-start;
           pointer-events: none;
-          box-sizing: border-box;
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
         }
+
+        .toast-card {
+          position: relative;
+          width: 350px;
+          border-radius: 12px;
+          background: rgba(255, 255, 255, 0.72);
+          backdrop-filter: blur(24px) saturate(190%);
+          -webkit-backdrop-filter: blur(24px) saturate(190%);
+          border: 1px solid rgba(255, 255, 255, 0.6);
+          box-shadow: 0 12px 36px -4px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.05);
+          color: #0f172a;
+          overflow: hidden;
+          opacity: 0;
+          transform: translateY(-12px) scale(0.97);
+          transform-origin: top right;
+          pointer-events: none;
+          transition:
+            opacity 0.24s cubic-bezier(0.16, 1, 0.3, 1),
+            transform 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+          padding: 12px 14px 14px 14px;
+          display: flex;
+          flex-direction: column;
+          gap: 9px;
+        }
+
         @media (prefers-color-scheme: dark) {
-          .toast {
-            background: rgba(15, 23, 42, 0.96);
+          .toast-card {
+            background: rgba(15, 23, 42, 0.72);
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            box-shadow: 0 16px 40px -8px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.08);
             color: #f8fafc;
-            box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.12);
           }
         }
-        .toast.show {
+
+        .toast-card.show {
           opacity: 1;
           transform: translateY(0) scale(1);
           pointer-events: auto;
         }
+
         .header {
           display: flex;
           align-items: center;
           justify-content: space-between;
           gap: 8px;
         }
-        .title-box {
+        .header-left {
           display: flex;
           align-items: center;
           gap: 7px;
-          font-weight: 600;
-          font-size: 13px;
+          min-width: 0;
         }
-        .badge-dot {
-          width: 8px;
-          height: 8px;
-          border-radius: 50%;
-          background: #ef4444;
-          box-shadow: 0 0 6px rgba(239, 68, 68, 0.6);
+        .app-icon {
+          width: 18px;
+          height: 18px;
+          display: block;
           flex-shrink: 0;
+          color: #0f172a;
         }
-        .badge-dot.speed {
-          background: #f59e0b;
-          box-shadow: 0 0 8px rgba(245, 158, 11, 0.7);
+        @media (prefers-color-scheme: dark) {
+          .app-icon { color: #f8fafc; }
         }
+
+        .title-text {
+          font-size: 13px;
+          font-weight: 600;
+          line-height: 18px;
+          height: 18px;
+          display: flex;
+          align-items: center;
+          color: #0f172a;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        @media (prefers-color-scheme: dark) {
+          .title-text { color: #f8fafc; }
+        }
+
         .close-btn {
           border: none;
           background: transparent;
           color: #94a3b8;
-          font-size: 16px;
-          line-height: 1;
+          width: 20px;
+          height: 20px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 4px;
           cursor: pointer;
-          padding: 2px 4px;
-          border-radius: 6px;
+          transition: all 0.15s ease;
+          flex-shrink: 0;
         }
         .close-btn:hover {
-          color: #ef4444;
-          background: rgba(239, 68, 68, 0.1);
-        }
-        .body {
-          font-size: 12px;
-          color: #64748b;
-          word-break: break-all;
-          max-height: 48px;
-          overflow: hidden;
-          text-overflow: ellipsis;
+          color: #0f172a;
+          background: rgba(0, 0, 0, 0.05);
         }
         @media (prefers-color-scheme: dark) {
-          .body { color: #94a3b8; }
+          .close-btn:hover {
+            color: #ffffff;
+            background: rgba(255, 255, 255, 0.1);
+          }
         }
+
+        .body-content {
+          font-size: 11.5px;
+          line-height: 1.45;
+          color: #64748b;
+          word-break: break-all;
+        }
+        @media (prefers-color-scheme: dark) {
+          .body-content { color: #94a3b8; }
+        }
+
+        .host-chip-list {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 4px;
+          max-height: 48px;
+          overflow: hidden;
+        }
+        .host-chip {
+          background: rgba(0, 0, 0, 0.04);
+          border: 1px solid rgba(0, 0, 0, 0.06);
+          color: #334155;
+          padding: 1.5px 6px;
+          border-radius: 4px;
+          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+          font-size: 10.5px;
+          max-width: 155px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        @media (prefers-color-scheme: dark) {
+          .host-chip {
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #cbd5e1;
+          }
+        }
+
+        .telemetry-row {
+          display: grid;
+          grid-template-columns: 1fr auto 1fr;
+          align-items: center;
+          gap: 6px;
+          background: rgba(0, 0, 0, 0.03);
+          border: 1px solid rgba(0, 0, 0, 0.06);
+          border-radius: 6px;
+          padding: 6px 10px;
+          margin-top: 3px;
+        }
+        @media (prefers-color-scheme: dark) {
+          .telemetry-row {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+          }
+        }
+
+        .tele-item {
+          display: flex;
+          flex-direction: column;
+          gap: 1px;
+        }
+        .tele-item.right {
+          align-items: flex-end;
+          text-align: right;
+        }
+        .tele-name {
+          font-size: 9.5px;
+          color: #94a3b8;
+        }
+        .tele-num {
+          font-size: 11.5px;
+          font-weight: 600;
+          font-family: ui-monospace, SFMono-Regular, monospace;
+          color: #64748b;
+        }
+        .tele-num.fast {
+          color: #2563eb;
+        }
+        @media (prefers-color-scheme: dark) {
+          .tele-num.fast { color: #60a5fa; }
+        }
+        .tele-arrow {
+          color: #94a3b8;
+          font-size: 12px;
+        }
+
         .actions {
           display: flex;
           align-items: center;
@@ -138,81 +261,127 @@ export default defineContentScript({
           gap: 8px;
           margin-top: 2px;
         }
-        .action-btn {
+        .ui-btn {
           border: none;
-          background: #2563eb;
-          color: #ffffff;
+          border-radius: 6px;
           padding: 5px 12px;
-          border-radius: 8px;
-          font-size: 12px;
+          font-size: 11.5px;
           font-weight: 500;
-          cursor: pointer;
-          transition: background 0.15s ease;
-        }
-        .action-btn:hover {
-          background: #1d4ed8;
-        }
-        .action-btn:disabled {
-          opacity: 0.6;
-          cursor: not-allowed;
-        }
-        .secondary-btn {
-          border: 1px solid rgba(148, 163, 184, 0.3);
-          background: transparent;
-          color: #64748b;
-          padding: 5px 10px;
-          border-radius: 8px;
-          font-size: 12px;
           cursor: pointer;
           transition: all 0.15s ease;
         }
-        .secondary-btn:hover {
-          background: rgba(148, 163, 184, 0.1);
-          color: #334155;
+        .ui-btn.primary {
+          background: #2563eb;
+          color: #ffffff;
+        }
+        .ui-btn.primary:hover {
+          background: #1d4ed8;
+        }
+        .ui-btn.ghost {
+          background: #f1f5f9;
+          color: #475569;
+          border: 1px solid #e2e8f0;
+        }
+        .ui-btn.ghost:hover {
+          background: #e2e8f0;
         }
         @media (prefers-color-scheme: dark) {
-          .secondary-btn { color: #94a3b8; border-color: rgba(255, 255, 255, 0.15); }
-          .secondary-btn:hover { color: #f8fafc; background: rgba(255, 255, 255, 0.08); }
+          .ui-btn.primary {
+            background: #3b82f6;
+          }
+          .ui-btn.primary:hover {
+            background: #2563eb;
+          }
+          .ui-btn.ghost {
+            background: rgba(255, 255, 255, 0.08);
+            color: #cbd5e1;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+          }
+          .ui-btn.ghost:hover {
+            background: rgba(255, 255, 255, 0.14);
+          }
         }
-        .speed-btn {
-          background: #d97706;
+        .ui-btn:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
         }
-        .speed-btn:hover {
-          background: #b45309;
-        }
+
         .status-msg {
-          font-size: 12px;
-          color: #10b981;
+          font-size: 11.5px;
           font-weight: 500;
+          color: #16a34a;
+        }
+        @media (prefers-color-scheme: dark) {
+          .status-msg { color: #4ade80; }
         }
         .status-msg.err {
-          color: #ef4444;
+          color: #dc2626;
         }
+        @media (prefers-color-scheme: dark) {
+          .status-msg.err { color: #f87171; }
+        }
+
       `;
       shadow.appendChild(style);
 
+      const wrapper = document.createElement('div');
+      wrapper.className = 'toast-wrapper';
+
       toastEl = document.createElement('div');
-      toastEl.className = 'toast';
+      toastEl.className = 'toast-card';
+      wrapper.appendChild(toastEl);
+
       toastEl.addEventListener('mouseenter', () => {
-        clearTimeout(timer);
+        pauseDismissTimer();
       });
       toastEl.addEventListener('mouseleave', () => {
-        resetDismissTimer();
+        resumeDismissTimer();
       });
 
-      shadow.appendChild(toastEl);
+      shadow.appendChild(wrapper);
       (document.body || document.documentElement).appendChild(hostEl);
     };
 
-    const resetDismissTimer = () => {
-      clearTimeout(timer);
-      timer = window.setTimeout(() => hideToast(), 6500);
+    let dismissTimer: number | null = null;
+    let dismissTimeRemaining = 7000;
+    let dismissStartedAt = 0;
+
+    const startDismissTimer = (duration = 7000) => {
+      clearTimeout(dismissTimer ?? undefined);
+      dismissTimeRemaining = duration;
+      dismissStartedAt = Date.now();
+      dismissTimer = window.setTimeout(() => hideToast(), duration);
+    };
+
+    const pauseDismissTimer = () => {
+      if (dismissTimer) {
+        clearTimeout(dismissTimer);
+        dismissTimer = null;
+        dismissTimeRemaining -= Date.now() - dismissStartedAt;
+      }
+    };
+
+    const resumeDismissTimer = () => {
+      if (dismissTimeRemaining > 400) {
+        startDismissTimer(dismissTimeRemaining);
+      } else {
+        hideToast();
+      }
+    };
+
+
+    const showToast = () => {
+      if (!toastEl) return;
+      requestAnimationFrame(() => {
+        toastEl?.classList.add('show');
+        startDismissTimer(7000);
+      });
     };
 
     const hideToast = () => {
       if (!toastEl) return;
+      clearTimeout(dismissTimer ?? undefined);
       toastEl.classList.remove('show');
-      clearTimeout(timer);
     };
 
     const renderToast = () => {
@@ -225,30 +394,34 @@ export default defineContentScript({
 
       const hosts = Array.from(failedHosts);
       const count = hosts.length;
-      const hostPreview = hosts.slice(0, 3).join(', ') + (hosts.length > 3 ? '...' : '');
+      const titleText = isZh ? `${count} 个域名无法访问` : `${count} Unreachable Host${count > 1 ? 's' : ''}`;
+      const btnText = isZh ? '一键添加代理' : 'Proxy Hosts';
 
-      const titleText = isZh
-        ? `NeoOmega: ${count} 个域名无法访问`
-        : `NeoOmega: ${count} unreachable host${count > 1 ? 's' : ''}`;
-      const btnText = isZh ? '一键添加代理' : 'Proxy hosts';
+      const chipsHtml = hosts
+        .slice(0, 4)
+        .map((h) => `<span class="host-chip" title="${h}">${h}</span>`)
+        .join('') + (hosts.length > 4 ? `<span class="host-chip">+${hosts.length - 4}</span>` : '');
 
       toastEl.innerHTML = `
         <div class="header">
-          <div class="title-box">
-            <span class="badge-dot"></span>
-            <span>${titleText}</span>
+          <div class="header-left">
+            ${LOGO_SVG}
+            <span class="title-text">${titleText}</span>
           </div>
-          <button class="close-btn" title="Dismiss">&times;</button>
+          <button class="close-btn" title="Dismiss">
+            <svg viewBox="0 0 16 16" width="12" height="12"><path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
         </div>
-        <div class="body">${hostPreview}</div>
+        <div class="body-content">
+          <div class="host-chip-list">${chipsHtml}</div>
+        </div>
         <div class="actions">
-          <button class="action-btn">${btnText}</button>
+          <button class="ui-btn primary action-btn">${btnText}</button>
         </div>
+
       `;
 
-      toastEl.querySelector('.close-btn')?.addEventListener('click', () => {
-        hideToast();
-      });
+      toastEl.querySelector('.close-btn')?.addEventListener('click', hideToast);
 
       const actionBtn = toastEl.querySelector('.action-btn') as HTMLButtonElement | null;
       actionBtn?.addEventListener('click', async () => {
@@ -282,23 +455,19 @@ export default defineContentScript({
         if (actionsEl) {
           if (successCount > 0) {
             actionsEl.innerHTML = `<span class="status-msg">✓ ${
-              isZh ? `已添加 ${successCount} 个规则，刷新生效` : `Added ${successCount} rules, refresh to apply`
+              isZh ? `已添加 ${successCount} 条规则，刷新生效` : `Added ${successCount} rules`
             }</span>`;
-            window.setTimeout(() => hideToast(), 3000);
+            window.setTimeout(() => hideToast(), 2500);
           } else {
             actionsEl.innerHTML = `<span class="status-msg err">${
               lastError || (isZh ? '添加失败' : 'Failed to add')
             }</span>`;
-            window.setTimeout(() => renderToast(), 3000);
+            window.setTimeout(() => renderToast(), 2500);
           }
         }
       });
 
-      // Show toast
-      requestAnimationFrame(() => {
-        toastEl?.classList.add('show');
-      });
-      resetDismissTimer();
+      showToast();
     };
 
     interface SpeedRecommendation {
@@ -314,30 +483,45 @@ export default defineContentScript({
     const renderSpeedRecommendation = (rec: SpeedRecommendation) => {
       createToastDom();
       if (!toastEl) return;
-      const titleText = isZh ? 'NeoOmega 加速建议' : 'NeoOmega Speed Suggestion';
-      const bodyText = isZh
-        ? `检测到 <strong>${rec.host}</strong> 访问慢 (${rec.currentLatency}ms)，建议使用【${rec.recommendedProfileName}】(${rec.recommendedLatency}ms)`
-        : `<strong>${rec.host}</strong> is slow (${rec.currentLatency}ms). Suggest [${rec.recommendedProfileName}] (${rec.recommendedLatency}ms)`;
+
+      const titleText = isZh ? '加速建议' : 'Speed Boost';
       const applyText = isZh ? '应用加速' : 'Apply Speedup';
-      const dismissText = isZh ? '忽略' : 'Dismiss';
+      const dismissText = isZh ? '忽略' : 'Ignore';
+      const speedupPct = Math.round(((rec.currentLatency - rec.recommendedLatency) / rec.currentLatency) * 100);
 
       toastEl.innerHTML = `
         <div class="header">
-          <div class="title-box">
-            <span class="badge-dot speed"></span>
-            <span>${titleText}</span>
+          <div class="header-left">
+            ${LOGO_SVG}
+            <span class="title-text">${titleText}</span>
           </div>
-          <button class="close-btn" title="Dismiss">&times;</button>
+          <button class="close-btn" title="Dismiss">
+            <svg viewBox="0 0 16 16" width="12" height="12"><path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
         </div>
-        <div class="body">${bodyText}</div>
+        <div class="body-content">
+          <div style="margin-bottom: 3px; font-weight: 500; font-family: ui-monospace, monospace;">${rec.host}</div>
+          <div class="telemetry-row">
+            <div class="tele-item">
+              <span class="tele-name">${rec.currentProfileName}</span>
+              <span class="tele-num">${rec.currentLatency}ms</span>
+            </div>
+            <div class="tele-arrow">➔</div>
+            <div class="tele-item right">
+              <span class="tele-name">${rec.recommendedProfileName}</span>
+              <span class="tele-num fast">${rec.recommendedLatency}ms${speedupPct > 0 ? ` (-${speedupPct}%)` : ''}</span>
+            </div>
+          </div>
+        </div>
         <div class="actions">
-          <button class="secondary-btn">${dismissText}</button>
-          <button class="action-btn speed-btn">${applyText}</button>
+          <button class="ui-btn ghost dismiss-btn">${dismissText}</button>
+          <button class="ui-btn primary action-btn speed-btn">${applyText}</button>
         </div>
+
       `;
 
       toastEl.querySelector('.close-btn')?.addEventListener('click', hideToast);
-      toastEl.querySelector('.secondary-btn')?.addEventListener('click', hideToast);
+      toastEl.querySelector('.dismiss-btn')?.addEventListener('click', hideToast);
 
       const actionBtn = toastEl.querySelector('.action-btn.speed-btn') as HTMLButtonElement | null;
       actionBtn?.addEventListener('click', async () => {
@@ -359,24 +543,20 @@ export default defineContentScript({
         if (actionsEl) {
           if (res.success) {
             actionsEl.innerHTML = `<span class="status-msg">✓ ${
-              isZh ? `已添加到自动切换规则：${rec.host} → ${res.profileName || rec.recommendedProfileName}` : `Added to switch rules: ${rec.host} → ${res.profileName || rec.recommendedProfileName}`
+              isZh ? `已添加规则：${rec.host}` : `Rule added: ${rec.host}`
             }</span>`;
-            window.setTimeout(hideToast, 2800);
+            window.setTimeout(hideToast, 2500);
           } else {
             actionsEl.innerHTML = `<span class="status-msg err">${
               res.error || (isZh ? '应用失败' : 'Failed')
             }</span>`;
-            window.setTimeout(hideToast, 3500);
+            window.setTimeout(hideToast, 3000);
           }
         }
       });
 
-      requestAnimationFrame(() => {
-        toastEl?.classList.add('show');
-      });
-      resetDismissTimer();
+      showToast();
     };
-
     let slowAnalysisDone = false;
     const isExcluded = (h: string) =>
       !h ||
