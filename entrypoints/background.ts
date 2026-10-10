@@ -411,8 +411,12 @@ export default defineBackground(() => {
     if (typeof chrome === 'undefined' || !chrome.proxy?.settings || speedProbeAbort?.signal.aborted) return null;
     if (candidate.auth?.username) {
       const rawTarget = candidate.directive.replace(/^[A-Z0-9]+\s+/, '').split(';')[0].trim();
-      const [h, p] = rawTarget.split(':');
-      if (h && p) setTempProxyCredentials(h, parseInt(p, 10), candidate.auth);
+      const lastColon = rawTarget.lastIndexOf(':');
+      if (lastColon !== -1) {
+        const h = rawTarget.slice(0, lastColon).replace(/^\[|\]$/g, '');
+        const p = parseInt(rawTarget.slice(lastColon + 1), 10);
+        if (h && !isNaN(p)) setTempProxyCredentials(h, p, candidate.auth);
+      }
     }
     const probePac = generateProbePacScript(candidate.directive, host, activeProfile, allProfiles);
     const { promise: setPromise, resolve: setResolve, reject: setReject } = Promise.withResolvers<void>();
@@ -432,13 +436,13 @@ export default defineBackground(() => {
       return null;
     }
     const { promise: delayPromise, resolve: delayResolve } = Promise.withResolvers<void>();
-    setTimeout(delayResolve, 50);
+    setTimeout(delayResolve, 120);
     await delayPromise;
     if (speedProbeAbort?.signal.aborted) return null;
 
     const start = performance.now();
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 1200);
+    const timer = setTimeout(() => controller.abort(), 3000);
     const probeSignal = speedProbeAbort
       ? AbortSignal.any([controller.signal, speedProbeAbort.signal])
       : controller.signal;
@@ -456,7 +460,7 @@ export default defineBackground(() => {
       if (speedProbeAbort?.signal.aborted) return null;
       try {
         const httpCtrl = new AbortController();
-        const httpTimer = setTimeout(() => httpCtrl.abort(), 1000);
+        const httpTimer = setTimeout(() => httpCtrl.abort(), 2000);
         const httpSignal = speedProbeAbort
           ? AbortSignal.any([httpCtrl.signal, speedProbeAbort.signal])
           : httpCtrl.signal;
@@ -490,10 +494,9 @@ export default defineBackground(() => {
     );
     if (fixedCandidates.length === 0) return;
     const now = Date.now();
-    const target = hosts.find((h) => now - (analyzedHostsCache.get(h.host) || 0) > 600000);
+    const target = hosts.find((h) => now - (analyzedHostsCache.get(h.host) || 0) > 60000);
     if (!target) return;
     analyzedHostsCache.set(target.host, now);
-
     const currentProfileId = matchSwitchProfile(activeProfile as SwitchProfile, `https://${target.host}/`, target.host);
 
     const candidates: Array<{ id: string; name: string; directive: string; auth?: ProxyAuth }> = [
@@ -516,30 +519,35 @@ export default defineBackground(() => {
         probeResults.push({ id: cand.id, name: cand.name, latency: lat });
       }
     } finally {
-      speedProbeRunning = false;
-      speedProbeAbort = null;
       clearTempProxyCredentials();
       ProxyManager.invalidateCache();
-      try {
-        const fresh = await getSettings();
-        const curr = fresh.profiles[fresh.activeProfileId];
-        if (curr) await ProxyManager.applyProfile(curr, fresh.profiles);
-      } catch (err) {
-        console.warn('[NeoOmega] Restore proxy after speed probe failed:', err);
+      if (!userTestRunning) {
+        try {
+          const fresh = await getSettings();
+          const curr = fresh.profiles[fresh.activeProfileId];
+          if (curr) await ProxyManager.applyProfile(curr, fresh.profiles);
+        } catch (err) {
+          console.warn('[NeoOmega] Restore proxy after speed probe failed:', err);
+        }
       }
+      speedProbeAbort = null;
+      speedProbeRunning = false;
     }
-
     const valid = probeResults.filter((r): r is { id: string; name: string; latency: number } => typeof r.latency === 'number' && r.latency > 0);
+    console.log('[NeoOmega] Speed probe for', target.host, 'results:', probeResults);
     if (valid.length === 0) return;
     valid.sort((a, b) => a.latency - b.latency);
     const best = valid[0];
+    console.log('[NeoOmega] Best candidate:', best.name, `${best.latency}ms`, 'current:', currentProfileId);
 
     if (best.id !== currentProfileId) {
       const currentResult = valid.find((r) => r.id === currentProfileId);
       const currentLatency = currentResult ? currentResult.latency : target.duration;
-      if (currentLatency - best.latency >= 300 && currentLatency >= best.latency * 1.3) {
+      if (currentLatency - best.latency >= 250 && currentLatency >= best.latency * 1.25) {
+        analyzedHostsCache.set(target.host, Date.now() + 600000);
         const curProfileObj = settings.profiles[currentProfileId];
         const curName = curProfileObj ? curProfileObj.name : (currentProfileId === 'direct' ? '直连' : currentProfileId);
+        console.log('[NeoOmega] Sending speed recommendation to tab', tabId, target.host, '->', best.name);
         chrome.tabs.sendMessage(
           tabId,
           {
@@ -814,6 +822,10 @@ export default defineBackground(() => {
           }
 
           const rawPattern = (host || '').trim();
+          if (!rawPattern) {
+            sendResponse({ success: false, error: '域名不能为空 (Host cannot be empty)' });
+            return;
+          }
           const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(rawPattern) || rawPattern.includes(':');
           const rulePattern = isIp || rawPattern.startsWith('*') ? rawPattern : `*.${rawPattern}`;
           const cleanHost = rawPattern.replace(/^\*\./, '');
@@ -880,6 +892,10 @@ export default defineBackground(() => {
           }
 
           const rawPattern = (pattern || '').trim();
+          if (!rawPattern) {
+            sendResponse({ success: false, error: '域名不能为空 (Host cannot be empty)' });
+            return;
+          }
           const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(rawPattern) || rawPattern.includes(':');
           const rulePattern = isIp || rawPattern.startsWith('*') ? rawPattern : `*.${rawPattern}`;
           const cleanHost = rawPattern.replace(/^\*\./, '');

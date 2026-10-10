@@ -6,6 +6,27 @@ export default defineContentScript({
 
     const isZh = (navigator.language || '').toLowerCase().startsWith('zh');
     const failedHosts = new Set<string>();
+    const isContextValid = () => {
+      try {
+        return typeof chrome !== 'undefined' && !!chrome.runtime?.id;
+      } catch {
+        return false;
+      }
+    };
+
+    const safeSendMessage = <T = unknown>(message: unknown, callback?: (res: T) => void) => {
+      if (!isContextValid()) return;
+      try {
+        chrome.runtime.sendMessage(message, (res) => {
+          const err = chrome.runtime.lastError;
+          if (err) return;
+          callback?.(res);
+        });
+      } catch {
+        // Extension context invalidated (reloaded or updated)
+      }
+    };
+
 
     let hostEl: HTMLDivElement | null = null;
     let shadow: ShadowRoot | null = null;
@@ -241,7 +262,7 @@ export default defineContentScript({
         for (const host of hosts) {
           try {
             const { promise: addPromise, resolve: addResolve } = Promise.withResolvers<{ success: boolean; error?: string }>();
-            chrome.runtime.sendMessage(
+            safeSendMessage<{ success: boolean; error?: string }>(
               { type: 'ADD_HOST_RULE', pattern: host, profileId: 'proxy' },
               (r) => addResolve(r || { success: false })
             );
@@ -324,7 +345,7 @@ export default defineContentScript({
         actionBtn.disabled = true;
         actionBtn.textContent = isZh ? '应用中...' : 'Applying...';
         const { promise: applyPromise, resolve: applyResolve } = Promise.withResolvers<{ success: boolean; error?: string; profileName?: string }>();
-        chrome.runtime.sendMessage(
+        safeSendMessage<{ success: boolean; error?: string; profileName?: string }>(
           {
             type: 'APPLY_SPEED_RECOMMENDATION',
             host: rec.host,
@@ -364,23 +385,34 @@ export default defineContentScript({
       h === '::1' ||
       h.startsWith('192.168.') ||
       h.startsWith('10.') ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(h) ||
       h.endsWith('.local') ||
-      h.endsWith('.internal');
+      h.endsWith('.internal') ||
+      h.endsWith('.lan');
 
-    const checkSlowHosts = () => {
-      if (slowAnalysisDone) return;
+    const reportedSlowHosts = new Set<string>();
+    const THRESHOLD = 1200;
+
+    const reportSlowHost = (h: string, dur: number) => {
+      if (isExcluded(h) || reportedSlowHosts.has(h)) return;
+      reportedSlowHosts.add(h);
+      console.log('[NeoOmega] Detected slow host:', h, `${dur}ms`);
+      safeSendMessage({
+        type: 'ANALYZE_SLOW_HOSTS',
+        hosts: [{ host: h, duration: dur }],
+        url: window.location.href,
+      });
+    };
+
+    const scanExistingTimings = () => {
       if (typeof performance === 'undefined' || !performance.getEntriesByType) return;
-      const slowMap = new Map<string, number>();
-      const THRESHOLD = 1800;
-
       try {
         const navs = performance.getEntriesByType('navigation') as PerformanceNavigationTiming[];
         if (navs.length > 0) {
           const nav = navs[0];
           const dur = nav.duration || (nav.responseEnd - nav.startTime);
-          if (dur > THRESHOLD) {
-            const h = window.location.hostname;
-            if (h && !isExcluded(h)) slowMap.set(h, Math.round(dur));
+          if (dur > THRESHOLD && window.location.hostname) {
+            reportSlowHost(window.location.hostname, Math.round(dur));
           }
         }
       } catch {}
@@ -392,38 +424,41 @@ export default defineContentScript({
           if (dur > THRESHOLD && r.name) {
             try {
               const u = new URL(r.name);
-              if ((u.protocol === 'http:' || u.protocol === 'https:') && !isExcluded(u.hostname) && !slowMap.has(u.hostname)) {
-                slowMap.set(u.hostname, Math.round(dur));
+              if (u.protocol === 'http:' || u.protocol === 'https:') {
+                reportSlowHost(u.hostname, Math.round(dur));
               }
             } catch {}
           }
         }
       } catch {}
-
-      if (slowMap.size > 0) {
-        slowAnalysisDone = true;
-        const topHosts = Array.from(slowMap.entries())
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, 2)
-          .map(([host, duration]) => ({ host, duration }));
-
-        chrome.runtime.sendMessage(
-          {
-            type: 'ANALYZE_SLOW_HOSTS',
-            hosts: topHosts,
-            url: window.location.href,
-          },
-          () => void chrome.runtime.lastError
-        );
-      }
     };
 
-    if (document.readyState === 'complete') {
-      window.setTimeout(checkSlowHosts, 1500);
-    } else {
-      window.addEventListener('load', () => window.setTimeout(checkSlowHosts, 1500));
-    }
-    window.setTimeout(checkSlowHosts, 4000);
+    try {
+      if (typeof PerformanceObserver !== 'undefined') {
+        const observer = new PerformanceObserver((list) => {
+          if (!isContextValid()) {
+            observer.disconnect();
+            return;
+          }
+          for (const entry of list.getEntries()) {
+            const dur = entry.duration;
+            if (dur > THRESHOLD && entry.name) {
+              try {
+                const u = new URL(entry.name);
+                if (u.protocol === 'http:' || u.protocol === 'https:') {
+                  reportSlowHost(u.hostname, Math.round(dur));
+                }
+              } catch {}
+            }
+          }
+        });
+        observer.observe({ type: 'resource', buffered: true });
+      }
+    } catch {}
+
+    scanExistingTimings();
+    window.setTimeout(scanExistingTimings, 1500);
+    window.setTimeout(scanExistingTimings, 4000);
 
     // Listen for real-time error notifications from background
     chrome.runtime.onMessage.addListener((message) => {
@@ -437,7 +472,7 @@ export default defineContentScript({
     });
 
     // Check existing errors on page load
-    chrome.runtime.sendMessage({ type: 'GET_MY_ERRORS' }, (res) => {
+    safeSendMessage<{ errors?: Array<{ host: string }> }>({ type: 'GET_MY_ERRORS' }, (res) => {
       if (res?.errors && Array.isArray(res.errors) && res.errors.length > 0) {
         for (const err of res.errors) {
           if (err.host) failedHosts.add(err.host);
