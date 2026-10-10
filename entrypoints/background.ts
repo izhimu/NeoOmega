@@ -4,7 +4,9 @@ import { generateTestPacScript, generateProbePacScript, formatFixedChain } from 
 import { matchSwitchProfile } from '../src/core/pac/matcher';
 import { ProxyManager } from '../src/core/proxy/proxy-manager';
 import { getSettings, saveSettings, setActiveProfileId, adoptSyncSettings } from '../src/core/storage/storage';
-import type { AppSettings, FixedProfile, Profile, ProxyAuth, ProxyServer, RuleListConfig, SwitchProfile, SwitchRule, TabNetworkError, TabRequestLog } from '../src/core/types';
+import type { AppSettings, FixedProfile, Profile, ProxyServer, RuleListConfig, SwitchProfile, SwitchRule, TabNetworkError, TabRequestLog } from '../src/core/types';
+
+type ProxyAuth = { username?: string; password?: string };
 
 type TimeoutHandle = ReturnType<typeof setTimeout>;
 
@@ -133,6 +135,9 @@ export default defineBackground(() => {
   };
 
   let ruleListFallbackRunning = false;
+  let userTestRunning = false;
+  let speedProbeRunning = false;
+  let speedProbeAbort: AbortController | null = null;
 
   // Direct fetch fails (e.g. GFWList unreachable without proxy): retry once,
   // then silently route ONLY the rule-list host through the first configured
@@ -163,7 +168,8 @@ export default defineBackground(() => {
         typeof chrome === 'undefined' ||
         !chrome.proxy?.settings ||
         userTestRunning ||
-        ruleListFallbackRunning
+        ruleListFallbackRunning ||
+        speedProbeRunning
       ) {
         throw directErr;
       }
@@ -198,10 +204,12 @@ export default defineBackground(() => {
         ProxyManager.invalidateCache(); // temp PAC wrote proxy settings directly; force re-apply
         try {
           // Re-read settings: user may have switched profiles during the fetch.
-          const fresh = await getSettings();
-          const current = fresh.profiles[fresh.activeProfileId];
-          if (current) {
-            await ProxyManager.applyProfile(current, fresh.profiles);
+          if (!userTestRunning && !speedProbeRunning) {
+            const fresh = await getSettings();
+            const current = fresh.profiles[fresh.activeProfileId];
+            if (current) {
+              await ProxyManager.applyProfile(current, fresh.profiles);
+            }
           }
         } catch (restoreErr) {
           console.error('[NeoOmega] Failed to restore proxy after rule-list fallback:', restoreErr);
@@ -210,10 +218,7 @@ export default defineBackground(() => {
     }
   };
 
-  let userTestQueue = Promise.resolve<any>();
-  let userTestRunning = false;
-  let speedProbeRunning = false;
-  let speedProbeAbort: AbortController | null = null;
+  let userTestQueue: Promise<any> = Promise.resolve();
 
   const executeProxyTest = async (
     proxy: ProxyServer,
@@ -400,6 +405,7 @@ export default defineBackground(() => {
   let failureNotificationOn = true;
   let speedRecommendationOn = true;
   let requestLogOn = false;
+  const mutedFailureHosts = new Set<string>();
   const analyzedHostsCache = new Map<string, number>();
 
   const probeCandidate = async (
@@ -408,9 +414,9 @@ export default defineBackground(() => {
     activeProfile?: Profile,
     allProfiles: Record<string, Profile> = {}
   ): Promise<number | null> => {
-    if (typeof chrome === 'undefined' || !chrome.proxy?.settings || speedProbeAbort?.signal.aborted) return null;
+    if (typeof chrome === 'undefined' || !chrome.proxy?.settings || speedProbeAbort?.signal.aborted || userTestRunning || ruleListFallbackRunning) return null;
     if (candidate.auth?.username) {
-      const rawTarget = candidate.directive.replace(/^[A-Z0-9]+\s+/, '').split(';')[0].trim();
+      const rawTarget = candidate.directive.replace(/^[A-Z0-9]+\s+/, '').split(';')[0]?.trim() ?? '';
       const lastColon = rawTarget.lastIndexOf(':');
       if (lastColon !== -1) {
         const h = rawTarget.slice(0, lastColon).replace(/^\[|\]$/g, '');
@@ -438,7 +444,7 @@ export default defineBackground(() => {
     const { promise: delayPromise, resolve: delayResolve } = Promise.withResolvers<void>();
     setTimeout(delayResolve, 120);
     await delayPromise;
-    if (speedProbeAbort?.signal.aborted) return null;
+    if (speedProbeAbort?.signal.aborted || userTestRunning || ruleListFallbackRunning) return null;
 
     const start = performance.now();
     const controller = new AbortController();
@@ -457,7 +463,7 @@ export default defineBackground(() => {
       return Math.round(performance.now() - start);
     } catch {
       clearTimeout(timer);
-      if (speedProbeAbort?.signal.aborted) return null;
+      if (speedProbeAbort?.signal.aborted || userTestRunning || ruleListFallbackRunning) return null;
       try {
         const httpCtrl = new AbortController();
         const httpTimer = setTimeout(() => httpCtrl.abort(), 2000);
@@ -484,6 +490,7 @@ export default defineBackground(() => {
   ) => {
     if (!speedRecommendationOn || userTestRunning || speedProbeRunning || ruleListFallbackRunning || !hosts.length || !tabId) return;
     const settings = await getSettings();
+    if (userTestRunning || speedProbeRunning || ruleListFallbackRunning) return;
     const activeProfile = settings.profiles[settings.activeProfileId];
     if (!activeProfile || activeProfile.profileType !== 'SwitchProfile') return;
 
@@ -514,14 +521,14 @@ export default defineBackground(() => {
     const probeResults: Array<{ id: string; name: string; latency: number | null }> = [];
     try {
       for (const cand of candidates) {
-        if (speedProbeAbort.signal.aborted || userTestRunning) break;
+        if (speedProbeAbort.signal.aborted || userTestRunning || ruleListFallbackRunning) break;
         const lat = await probeCandidate(cand, target.host, activeProfile, settings.profiles);
         probeResults.push({ id: cand.id, name: cand.name, latency: lat });
       }
     } finally {
       clearTempProxyCredentials();
       ProxyManager.invalidateCache();
-      if (!userTestRunning) {
+      if (!userTestRunning && !ruleListFallbackRunning) {
         try {
           const fresh = await getSettings();
           const curr = fresh.profiles[fresh.activeProfileId];
@@ -538,6 +545,7 @@ export default defineBackground(() => {
     if (valid.length === 0) return;
     valid.sort((a, b) => a.latency - b.latency);
     const best = valid[0];
+    if (!best) return;
     console.log('[NeoOmega] Best candidate:', best.name, `${best.latency}ms`, 'current:', currentProfileId);
 
     if (best.id !== currentProfileId) {
@@ -569,7 +577,7 @@ export default defineBackground(() => {
   };
 
   const onCompletedListener = (details: chrome.webRequest.OnCompletedDetails) => {
-    clearPending(details.requestId);
+    resolvePending(details.requestId);
     if (details.tabId <= 0) return;
     try {
       const urlObj = new URL(details.url);
@@ -593,7 +601,7 @@ export default defineBackground(() => {
 
 
   const notifyTabOfError = (tabId: number, host: string, count: number) => {
-    if (tabId <= 0 || !errorTrackingOn || !failureNotificationOn || typeof chrome === 'undefined' || !chrome.tabs?.sendMessage) return;
+    if (tabId <= 0 || !errorTrackingOn || !failureNotificationOn || mutedFailureHosts.has(host) || typeof chrome === 'undefined' || !chrome.tabs?.sendMessage) return;
     chrome.tabs.sendMessage(
       tabId,
       {
@@ -607,7 +615,10 @@ export default defineBackground(() => {
 
   // 5s hang detection: any request pending > 5s without headers = unreachable
   const HANG_TIMEOUT_MS = 5000;
-  const pendingRequests = new Map<string, { tabId: number; host: string; timer: TimeoutHandle }>();
+  const pendingRequests = new Map<
+    string,
+    { tabId: number; host: string; url: string; timer?: TimeoutHandle; reported?: boolean }
+  >();
 
   const clearPending = (requestId: string) => {
     const p = pendingRequests.get(requestId);
@@ -615,6 +626,29 @@ export default defineBackground(() => {
       clearTimeout(p.timer);
       pendingRequests.delete(requestId);
     }
+  };
+
+  const resolvePending = (requestId: string) => {
+    const p = pendingRequests.get(requestId);
+    if (!p) return;
+    clearTimeout(p.timer);
+    if (p.reported) {
+      const errors = tabErrors.get(p.tabId);
+      if (errors) {
+        const next = errors.filter(
+          (e) => !(e.url === p.url && e.host === p.host && e.error === 'net::ERR_CONNECTION_HANG')
+        );
+        if (next.length > 0) tabErrors.set(p.tabId, next);
+        else tabErrors.delete(p.tabId);
+        broadcastTab(p.tabId);
+        // Retract the content-script toast only if a hang entry was actually removed
+        // (host may carry a different, genuine error that should keep the toast)
+        if (next.length !== errors.length && typeof chrome !== 'undefined' && chrome.tabs?.sendMessage) {
+          chrome.tabs.sendMessage(p.tabId, { type: 'TAB_ERROR_RETRACTED', host: p.host }, () => void chrome.runtime.lastError);
+        }
+      }
+    }
+    pendingRequests.delete(requestId);
   };
 
   const addTabError = (tabId: number, url: string, host: string, error: string) => {
@@ -625,10 +659,11 @@ export default defineBackground(() => {
       if (errors.length > 50) errors.shift();
       tabErrors.set(tabId, errors);
       notifyTabOfError(tabId, host, errors.length);
+      broadcastTab(tabId);
     }
   };
 
-  const onBeforeRequestListener = (details: chrome.webRequest.OnBeforeRequestDetails) => {
+  const onBeforeRequestListener = (details: chrome.webRequest.OnBeforeRequestDetails): undefined => {
     if (details.tabId <= 0 || !errorTrackingOn) return;
     try {
       const urlObj = new URL(details.url);
@@ -636,18 +671,19 @@ export default defineBackground(() => {
       if (!host) return;
       clearPending(details.requestId);
       const timer = setTimeout(() => {
-        pendingRequests.delete(details.requestId);
+        const p = pendingRequests.get(details.requestId);
+        if (p) p.reported = true;
         console.warn('[NeoOmega] Hang detected:', host, details.url);
         addTabError(details.tabId, details.url, host, 'net::ERR_CONNECTION_HANG');
       }, HANG_TIMEOUT_MS);
-      pendingRequests.set(details.requestId, { tabId: details.tabId, host, timer });
+      pendingRequests.set(details.requestId, { tabId: details.tabId, host, url: details.url, timer, reported: false });
     } catch {
       // ignore invalid URLs
     }
   };
 
-  const onHeadersReceivedListener = (details: chrome.webRequest.OnHeadersReceivedDetails) => {
-    clearPending(details.requestId);
+  const onHeadersReceivedListener = (details: chrome.webRequest.OnHeadersReceivedDetails): undefined => {
+    resolvePending(details.requestId);
   };
 
   const onErrorListener = (details: chrome.webRequest.OnErrorOccurredDetails) => {
@@ -782,6 +818,8 @@ export default defineBackground(() => {
       errorTrackingOn = !!s.enableErrorMonitoring;
       failureNotificationOn = s.enableFailureNotification ?? true;
       speedRecommendationOn = s.enableSpeedRecommendation ?? true;
+      mutedFailureHosts.clear();
+      for (const h of s.mutedFailureHosts ?? []) mutedFailureHosts.add(h);
       applyWebRtcPolicy(s.webRtcMode);
       applyNetworkPrediction(s.disableNetworkPrediction);
       syncWebRequestListeners();
@@ -795,6 +833,8 @@ export default defineBackground(() => {
     errorTrackingOn = !!(change.newValue as AppSettings | undefined)?.enableErrorMonitoring;
     failureNotificationOn = (change.newValue as AppSettings | undefined)?.enableFailureNotification ?? true;
     speedRecommendationOn = (change.newValue as AppSettings | undefined)?.enableSpeedRecommendation ?? true;
+    mutedFailureHosts.clear();
+    for (const h of (change.newValue as AppSettings | undefined)?.mutedFailureHosts ?? []) mutedFailureHosts.add(h);
     const oldRtc = (change.oldValue as AppSettings | undefined)?.webRtcMode ?? 'default';
     const newRtc = (change.newValue as AppSettings | undefined)?.webRtcMode ?? 'default';
     if (oldRtc !== newRtc) applyWebRtcPolicy(newRtc);
@@ -842,6 +882,10 @@ export default defineBackground(() => {
   // Handle messages from Popup and Options
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || typeof message !== 'object') return false;
+    if (message.type === 'ANALYZE_SLOW_HOSTS') {
+      void analyzeSlowHosts(message.hosts, _sender.tab?.id);
+      return false;
+    }
     if (message.type === 'GET_TAB_ERRORS') {
       const errors = tabErrors.get(message.tabId) || [];
       sendResponse({ errors });
@@ -853,9 +897,27 @@ export default defineBackground(() => {
         return false;
       }
       const tabId = _sender.tab?.id || message.tabId;
-      const errors = tabId ? tabErrors.get(tabId) || [] : [];
+      const errors = (tabId ? tabErrors.get(tabId) || [] : []).filter((e) => !mutedFailureHosts.has(e.host));
       sendResponse({ errors });
       return false;
+    }
+    if (message.type === 'MUTE_FAILURE_HOSTS') {
+      (async () => {
+        try {
+          const hosts: string[] = Array.isArray(message.hosts)
+            ? message.hosts.filter((h: unknown) => typeof h === 'string' && h)
+            : [];
+          const s = await getSettings();
+          const muted = new Set(s.mutedFailureHosts ?? []);
+          for (const h of hosts) muted.add(h);
+          s.mutedFailureHosts = Array.from(muted);
+          await saveSettings(s);
+          sendResponse({ success: true });
+        } catch (err) {
+          sendResponse({ success: false, error: err instanceof Error ? err.message : String(err) });
+        }
+      })();
+      return true;
     }
     if (message.type === 'CLEAR_TAB_LOGS') {
       tabErrors.delete(message.tabId);
@@ -868,23 +930,6 @@ export default defineBackground(() => {
       (async () => {
         try {
           const { host, profileId } = message;
-          const settings = await getSettings();
-          const active = settings.profiles[settings.activeProfileId];
-          let targetSwitchProfile: SwitchProfile | undefined;
-
-          if (active && active.profileType === 'SwitchProfile') {
-            targetSwitchProfile = active as SwitchProfile;
-          } else {
-            targetSwitchProfile = Object.values(settings.profiles).find(
-              (p): p is SwitchProfile => p.profileType === 'SwitchProfile'
-            );
-          }
-
-          if (!targetSwitchProfile) {
-            sendResponse({ success: false, error: '未找到自动切换情景模式 (No Auto Switch profile found)' });
-            return;
-          }
-
           const rawPattern = (host || '').trim();
           if (!rawPattern) {
             sendResponse({ success: false, error: '域名不能为空 (Host cannot be empty)' });
@@ -894,6 +939,23 @@ export default defineBackground(() => {
           const rulePattern = isIp || rawPattern.startsWith('*') ? rawPattern : `*.${rawPattern}`;
           const cleanHost = rawPattern.replace(/^\*\./, '');
           const isMatch = (p: string) => p === rulePattern || p === rawPattern || p.replace(/^\*\./, '') === cleanHost;
+
+          const freshSettings = await getSettings();
+          const active = freshSettings.profiles[freshSettings.activeProfileId];
+          let targetSwitchProfile: SwitchProfile | undefined;
+
+          if (active && active.profileType === 'SwitchProfile') {
+            targetSwitchProfile = active as SwitchProfile;
+          } else {
+            targetSwitchProfile = Object.values(freshSettings.profiles).find(
+              (p): p is SwitchProfile => p.profileType === 'SwitchProfile'
+            );
+          }
+
+          if (!targetSwitchProfile) {
+            sendResponse({ success: false, error: '未找到自动切换情景模式 (No Auto Switch profile found)' });
+            return;
+          }
 
           const existingRule = targetSwitchProfile.rules.find(
             (r) => r.condition.conditionType === 'HostWildcardCondition' && isMatch(r.condition.pattern)
@@ -911,11 +973,11 @@ export default defineBackground(() => {
             profileId,
             note: existingRule?.note || `Speed suggestion: ${profileId}`,
           });
-          await saveSettings(settings);
+          await saveSettings(freshSettings);
           if (active && active.profileType === 'SwitchProfile') {
-            await ProxyManager.applyProfile(targetSwitchProfile, settings.profiles);
+            await ProxyManager.applyProfile(targetSwitchProfile, freshSettings.profiles);
           }
-          const targetProfile = settings.profiles[profileId];
+          const targetProfile = freshSettings.profiles[profileId];
           const targetName = targetProfile ? targetProfile.name : (profileId === 'direct' ? '直连' : profileId);
           sendResponse({ success: true, profileName: targetName });
         } catch (err) {
@@ -947,14 +1009,6 @@ export default defineBackground(() => {
       (async () => {
         try {
           const { pattern, profileId, tabId } = message;
-          const settings = await getSettings();
-          const active = settings.profiles[settings.activeProfileId];
-
-          if (!active || active.profileType !== 'SwitchProfile') {
-            sendResponse({ success: false, error: '当前情景模式不是自动切换模式 (Current profile is not an Auto Switch profile)' });
-            return;
-          }
-
           const rawPattern = (pattern || '').trim();
           if (!rawPattern) {
             sendResponse({ success: false, error: '域名不能为空 (Host cannot be empty)' });
@@ -964,6 +1018,34 @@ export default defineBackground(() => {
           const rulePattern = isIp || rawPattern.startsWith('*') ? rawPattern : `*.${rawPattern}`;
           const cleanHost = rawPattern.replace(/^\*\./, '');
           const isMatch = (p: string) => p === rulePattern || p === rawPattern || p.replace(/^\*\./, '') === cleanHost;
+
+          const freshSettings = await getSettings();
+          const active = freshSettings.profiles[freshSettings.activeProfileId];
+
+          if (!active || active.profileType !== 'SwitchProfile') {
+            sendResponse({ success: false, error: '当前情景模式不是自动切换模式 (Current profile is not an Auto Switch profile)' });
+            return;
+          }
+
+          let targetProfileId = profileId;
+          if (!targetProfileId || !freshSettings.profiles[targetProfileId]) {
+            if (freshSettings.profiles['proxy']) {
+              targetProfileId = 'proxy';
+            } else {
+              const order = freshSettings.order || Object.keys(freshSettings.profiles);
+              const firstFixed = order.find((id) => freshSettings.profiles[id]?.profileType === 'FixedProfile');
+              if (firstFixed) {
+                targetProfileId = firstFixed;
+              } else {
+                const anyFixed = Object.keys(freshSettings.profiles).find((id) => freshSettings.profiles[id]?.profileType === 'FixedProfile');
+                if (anyFixed) targetProfileId = anyFixed;
+              }
+            }
+          }
+          if (!targetProfileId || !freshSettings.profiles[targetProfileId]) {
+            sendResponse({ success: false, error: '未找到可用的代理情景模式 (No proxy profile available)' });
+            return;
+          }
 
           const switchProfile = active as SwitchProfile;
           const existingRule = switchProfile.rules.find(
@@ -981,11 +1063,11 @@ export default defineBackground(() => {
               conditionType: 'HostWildcardCondition',
               pattern: rulePattern,
             },
-            profileId: profileId || 'proxy',
+            profileId: targetProfileId,
             note: existingRule?.note || 'Added from popup',
           });
-          await saveSettings(settings);
-          await ProxyManager.applyProfile(switchProfile, settings.profiles);
+          await saveSettings(freshSettings);
+          await ProxyManager.applyProfile(switchProfile, freshSettings.profiles);
           const targetTabId = typeof tabId === 'number' && tabId > 0 ? tabId : _sender.tab?.id;
           if (typeof targetTabId === 'number' && targetTabId > 0 && tabErrors.has(targetTabId)) {
             const cur = tabErrors.get(targetTabId)!;

@@ -1,5 +1,6 @@
 <script lang="ts" setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { Toaster, toast } from 'vue-sonner';
 import { Settings, Activity, ArrowUpRight, Globe } from '@lucide/vue';
 import { getSettings } from '../../src/core/storage/storage';
 import type { AppSettings, Profile, SwitchRule, TabNetworkError } from '../../src/core/types';
@@ -239,8 +240,14 @@ const reloadCurrentTab = () => {
 
 const switchProfile = async (profileId: string) => {
   if (!settings.value || settings.value.activeProfileId === profileId) return;
+  const previousProfileId = settings.value.activeProfileId;
   settings.value.activeProfileId = profileId;
-  chrome.runtime.sendMessage({ type: 'SWITCH_PROFILE', profileId }, () => {
+  chrome.runtime.sendMessage({ type: 'SWITCH_PROFILE', profileId }, (res) => {
+    if (chrome.runtime.lastError || (res && !res.success)) {
+      if (settings.value) settings.value.activeProfileId = previousProfileId;
+      toast.error(res?.error || chrome.runtime.lastError?.message || t('options.profileSaveFailed'));
+      return;
+    }
     reloadCurrentTab();
   });
 };
@@ -276,7 +283,11 @@ const quickAddSite = (profileId: 'proxy' | 'direct') => {
         settings.value = await getSettings();
         reloadCurrentTab();
       }
-      siteRuleTimer = setTimeout(() => { siteRuleMsg.value = null; }, 2500);
+      if (siteRuleTimer) clearTimeout(siteRuleTimer);
+      siteRuleTimer = setTimeout(() => {
+        siteRuleMsg.value = null;
+        siteRuleTimer = null;
+      }, 2500);
     }
   );
 };
@@ -289,11 +300,16 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (cleanThemeListener) cleanThemeListener();
+  if (siteRuleTimer) {
+    clearTimeout(siteRuleTimer);
+    siteRuleTimer = null;
+  }
 });
 </script>
 
 <template>
   <div class="flex flex-col gap-2.5 p-2.5 select-none font-sans text-slate-800 dark:text-slate-100 bg-white dark:bg-slate-950 w-[250px]">
+    <Toaster position="top-center" rich-colors :duration="2000" />
     <!-- Header -->
     <header class="flex justify-between items-center px-1">
       <div class="flex items-center gap-2 min-w-0">

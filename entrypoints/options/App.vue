@@ -101,8 +101,7 @@ const selectTab = (tab: string) => {
 const applyProfile = async (id: string) => {
   if (settings.value.activeProfileId === id) return;
   settings.value.activeProfileId = id;
-  await saveCurrentSettings();
-  toast.success(t('options.profileApplied'));
+  await saveCurrentSettings(t('options.profileApplied'));
 };
 
 const openAddModal = () => {
@@ -202,22 +201,48 @@ const handleStorageChange = (changes: { [key: string]: chrome.storage.StorageCha
   }
 };
 
-const saveCurrentSettings = async () => {
+const saveCurrentSettings = async (successToast?: string | false): Promise<boolean> => {
   applyingOwnChange = true;
   try {
+    const fresh = await getSettings();
+    if (fresh?.profiles && settings.value?.profiles) {
+      for (const [id, prof] of Object.entries(settings.value.profiles)) {
+        const freshProf = fresh.profiles[id];
+        if (
+          prof &&
+          freshProf &&
+          prof.profileType === 'SwitchProfile' &&
+          freshProf.profileType === 'SwitchProfile' &&
+          prof.ruleList &&
+          freshProf.ruleList
+        ) {
+          prof.ruleList.rulesCache = freshProf.ruleList.rulesCache;
+          prof.ruleList.lastUpdate = freshProf.ruleList.lastUpdate;
+        }
+      }
+    }
     await saveSettings(settings.value);
     savedSnapshot = JSON.stringify(settings.value);
     applyTheme(settings.value.theme);
     await ProxyManager.applyCurrentActive();
-    toast.success(t('options.profileSaved'));
+    if (successToast !== false) {
+      toast.success(successToast || t('options.profileSaved'));
+    }
+    return true;
   } catch (err) {
     console.error('[NeoOmega] Failed to save settings:', err);
     toast.error(t('options.profileSaveFailed'));
+    return false;
   } finally {
     setTimeout(() => {
       applyingOwnChange = false;
     }, 200);
   }
+};
+
+const unmuteFailureHost = async (host: string) => {
+  settings.value.mutedFailureHosts = (settings.value.mutedFailureHosts ?? []).filter((h) => h !== host);
+  await saveCurrentSettings(false);
 };
 
 const debounceSaveRuleListInterval = (val: string | number) => {
@@ -234,7 +259,6 @@ const changeLanguage = async (lang: 'auto' | 'zh_CN' | 'en') => {
   setLocale(resolveLocale(lang));
   await saveCurrentSettings();
   document.title = `${t('options.brand')} - ${t('options.brandSub')}`;
-  toast.success(t('options.profileSaved'));
 };
 
 const toggleLanguage = () => {
@@ -254,6 +278,7 @@ const runLeakTest = async () => {
   if (leakRunning.value) return;
   leakRunning.value = true;
   leakRan.value = false;
+  dnsError.value = '';
   try {
     const [exits, ices, dns, country] = await Promise.all([
       fetchExitIps(),
@@ -304,10 +329,9 @@ const confirmDeleteProfile = async () => {
   if (settings.value.activeProfileId === id) {
     settings.value.activeProfileId = 'system';
   }
-  await saveCurrentSettings();
+  await saveCurrentSettings(t('options.profileDeleted'));
   activeTab.value = `profile:${settings.value.order[0] || 'direct'}`;
   showDeleteConfirm.value = false;
-  toast.success(t('options.profileDeleted'));
 };
 
 const createProfile = async () => {
@@ -344,7 +368,6 @@ const createProfile = async () => {
   showAddModal.value = false;
   newProfileName.value = '';
   activeTab.value = `profile:${id}`;
-  toast.success(t('options.profileSaved'));
 };
 
 // Switch Rule Management
@@ -419,6 +442,7 @@ const updateRuleListNow = async (profileId: string) => {
 };
 
 const showRuleListModal = ref(false);
+const showMutedHostsModal = ref(false);
 const ruleListSearchQuery = ref('');
 const ruleListDisplayLimit = ref(200);
 
@@ -616,6 +640,12 @@ const addFallbackServer = () => {
 const removeFallbackServer = (idx: number) => {
   fixedProfile.value?.fallbackServers?.splice(idx, 1);
 };
+const clampPort = (val: unknown, current?: number): number => {
+  const parsed = parseInt(String(val), 10);
+  if (isNaN(parsed) || parsed < 1) return current && current >= 1 ? current : 1;
+  return Math.min(65535, parsed);
+};
+
 
 // Backup Import / Export
 // One-time sponsor prompt after a successful backup import (gratitude peak).
@@ -647,7 +677,11 @@ const handleFileImport = async (e: Event) => {
     try {
       const imported = parseSwitchyOmegaBackup(text);
       settings.value = imported;
-      await saveCurrentSettings();
+      const ok = await saveCurrentSettings(false);
+      if (!ok) {
+        await loadSettings();
+        return;
+      }
       maybePromptSponsor();
       toast.success(t('options.importSuccess'));
       activeTab.value = `profile:${imported.order[0]}`;
@@ -1029,7 +1063,7 @@ onUnmounted(() => {
                 :model-value="fixedProfile.fallbackProxy.port"
                 type="number"
                 placeholder="7890"
-                @update:model-value="fixedProfile.fallbackProxy.port = Number($event)"
+                @update:model-value="fixedProfile.fallbackProxy.port = clampPort($event, fixedProfile.fallbackProxy.port)"
               />
             </div>
             <div class="flex flex-col gap-2">
@@ -1075,7 +1109,7 @@ onUnmounted(() => {
                 type="number"
                 placeholder="port"
                 class="w-28"
-                @update:model-value="srv.port = Number($event)"
+                @update:model-value="srv.port = clampPort($event, srv.port)"
               />
               <UiButton variant="ghost" size="sm" @click="removeFallbackServer(idx)">
                 <X :size="14" />
@@ -1626,6 +1660,15 @@ onUnmounted(() => {
               />
               {{ t('options.failureNotificationSwitch') }}
             </label>
+            <UiButton
+              v-if="settings.mutedFailureHosts?.length"
+              variant="secondary"
+              size="sm"
+              class="mt-3"
+              @click="showMutedHostsModal = true"
+            >
+              {{ t('options.failureNotificationMutedBtn') }} ({{ settings.mutedFailureHosts.length }})
+            </UiButton>
           </SettingCard>
           <SettingCard
             :title="t('options.speedRecommendationTitle')"
@@ -1943,6 +1986,28 @@ onUnmounted(() => {
 
     <GuideDialog v-model:open="showGuide" />
     <SponsorDialog v-model:open="showSponsor" />
+
+    <!-- Muted Failure Hosts Modal -->
+    <UiDialog
+      v-model:open="showMutedHostsModal"
+      :title="t('options.mutedFailureHostsTitle')"
+    >
+      <div v-if="settings.mutedFailureHosts?.length" class="flex flex-col gap-1.5 max-h-80 overflow-y-auto -mx-1 px-1">
+        <div
+          v-for="host in settings.mutedFailureHosts"
+          :key="host"
+          class="flex items-center justify-between gap-2 py-1.5 px-2.5 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200/80 dark:border-white/10"
+        >
+          <span class="font-mono text-xs text-slate-700 dark:text-slate-300 truncate">{{ host }}</span>
+          <UiButton variant="ghost" size="icon" class="shrink-0" @click="unmuteFailureHost(host)">
+            <Trash2 :size="14" />
+          </UiButton>
+        </div>
+      </div>
+      <div v-else class="text-xs text-slate-500 dark:text-slate-400 py-4 text-center">
+        {{ t('options.mutedFailureHostsEmpty') }}
+      </div>
+    </UiDialog>
 
   </div>
 </template>

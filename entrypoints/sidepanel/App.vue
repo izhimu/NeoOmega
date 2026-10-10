@@ -100,6 +100,12 @@ const refreshState = async () => {
   await loadCurrentTab();
 };
 
+const handleStorageChange = (changes: { [key: string]: chrome.storage.StorageChange }, areaName: string) => {
+  if (areaName === 'local' && changes['neo_omega_settings']) {
+    refreshState();
+  }
+};
+
 const filteredRequests = computed(() => {
   return requests.value.filter((req) => {
     if (filterType.value === 'errors' && !req.error) {
@@ -182,6 +188,9 @@ onMounted(() => {
     chrome.tabs.onActivated.addListener(handleTabActivated);
     chrome.tabs.onUpdated.addListener(handleTabUpdated);
   }
+  if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
+    chrome.storage.onChanged.addListener(handleStorageChange);
+  }
   document.title = `${t('sidepanel.title')} - ${t('sidepanel.subtitle')}`;
   cleanThemeListener = initThemeListener(() => settings.value?.theme);
 });
@@ -195,6 +204,9 @@ onUnmounted(() => {
   if (typeof chrome !== 'undefined' && chrome.tabs) {
     chrome.tabs.onActivated.removeListener(handleTabActivated);
     chrome.tabs.onUpdated.removeListener(handleTabUpdated);
+  }
+  if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
+    chrome.storage.onChanged.removeListener(handleStorageChange);
   }
   port?.disconnect();
   port = null;

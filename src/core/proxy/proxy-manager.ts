@@ -7,6 +7,27 @@ import { generatePacScript, resolveProfile } from '../pac/generator';
 import { getActiveProfile, getSettings } from '../storage/storage';
 import type { Profile } from '../types';
 let lastAppliedKey: string | null = null;
+let proxyQueue: Promise<void> = Promise.resolve();
+
+const setProxy = (value: chrome.proxy.ProxyConfig, key: string): Promise<void> => {
+  const p = proxyQueue.then(async () => {
+    if (lastAppliedKey === key) return;
+    await chrome.proxy.settings.set({ value, scope: 'regular' });
+    lastAppliedKey = key;
+  });
+  proxyQueue = p.catch(() => {});
+  return p;
+};
+
+const clearProxy = (): Promise<void> => {
+  const p = proxyQueue.then(async () => {
+    if (lastAppliedKey === 'system') return;
+    await chrome.proxy.settings.clear({ scope: 'regular' });
+    lastAppliedKey = 'system';
+  });
+  proxyQueue = p.catch(() => {});
+  return p;
+};
 
 export class ProxyManager {
   /** Drop cached proxy state; required after any direct chrome.proxy.settings write (e.g. proxy test) */
@@ -29,19 +50,10 @@ export class ProxyManager {
       target = resolved || profiles['direct'] || { id: 'direct', name: 'Direct', profileType: 'DirectProfile', color: '#6b7280' };
     }
 
-    const setProxy = async (value: chrome.proxy.ProxyConfig, key: string): Promise<void> => {
-      if (lastAppliedKey === key) return; // PAC unchanged: skip Chromium recompile + stack reset
-      await chrome.proxy.settings.set({ value, scope: 'regular' });
-      lastAppliedKey = key;
-    };
-
     switch (target.profileType) {
       case 'SystemProfile': {
         // Return proxy control to Chromium/OS
-        if (lastAppliedKey !== 'system') {
-          await chrome.proxy.settings.clear({ scope: 'regular' });
-          lastAppliedKey = 'system';
-        }
+        await clearProxy();
         break;
       }
 

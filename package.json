@@ -2,7 +2,7 @@
   "name": "neo-omega",
   "description": "Modern, lightweight, and robust proxy management extension for Chrome (Manifest V3)",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "license": "MIT",
   "author": "Haoran <haoran@izhimu.cn>",
   "type": "module",

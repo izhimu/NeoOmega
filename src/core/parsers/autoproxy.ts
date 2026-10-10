@@ -105,12 +105,17 @@ export function parseAutoProxyLine(
     conditionType = 'KeywordCondition';
     pattern = raw;
   }
+  if (conditionType === 'UrlRegexCondition') {
+    // ponytail: ReDoS heuristic rejects >300 chars or nested quantifiers; upgrade to safe-regex engine if legit rules trip
+    if (pattern.length > 300 || /\(([^)]*[+*][^)]*)\)[+*{]/.test(pattern)) {
+      return null;
+    }
+  }
 
   const condition: RuleCondition = {
     conditionType,
     pattern,
   };
-
   return {
     id: `rl_rule_${index}`,
     enabled: true,
@@ -157,18 +162,55 @@ export async function fetchAndParseRuleList(
   matchProfileId: string,
   defaultProfileId: string = 'direct'
 ): Promise<{ text: string; rules: SwitchRule[] }> {
-  let res: Response;
+  const MAX_BYTES = 8 * 1024 * 1024; // 8 MiB
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30_000);
   try {
-    res = await fetch(url);
-  } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    throw new Error(`网络请求失败 (${errorMsg})。若无法直连此规则地址，请开启代理或更换镜像 URL。`);
+    let res: Response;
+    try {
+      res = await fetch(url, { signal: controller.signal });
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      throw new Error(`网络请求失败 (${errorMsg})。若无法直连此规则地址，请开启代理或更换镜像 URL。`);
+    }
+    if (!res.ok) {
+      throw new Error(`下载规则列表失败: HTTP ${res.status} ${res.statusText}`);
+    }
+    let rawText: string;
+    if (res.body && typeof res.body.getReader === 'function') {
+      const reader = res.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let receivedBytes = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          receivedBytes += value.byteLength;
+          if (receivedBytes > MAX_BYTES) {
+            controller.abort();
+            throw new Error('规则列表体积过大，超出 8 MiB 限制');
+          }
+          chunks.push(value);
+        }
+      }
+      const combined = new Uint8Array(receivedBytes);
+      let offset = 0;
+      for (const chunk of chunks) {
+        combined.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      rawText = new TextDecoder().decode(combined);
+    } else {
+      rawText = await res.text();
+      if (rawText.length > MAX_BYTES) {
+        controller.abort();
+        throw new Error('规则列表体积过大，超出 8 MiB 限制');
+      }
+    }
+    const text = decodeRuleListText(rawText);
+    const rules = parseAutoProxyRules(text, matchProfileId, defaultProfileId);
+    return { text, rules };
+  } finally {
+    clearTimeout(timer);
   }
-  if (!res.ok) {
-    throw new Error(`下载规则列表失败: HTTP ${res.status} ${res.statusText}`);
-  }
-  const rawText = await res.text();
-  const text = decodeRuleListText(rawText);
-  const rules = parseAutoProxyRules(text, matchProfileId, defaultProfileId);
-  return { text, rules };
 }

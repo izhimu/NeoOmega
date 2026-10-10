@@ -73,17 +73,47 @@ export function parseSwitchyOmegaBackup(jsonStr: string): AppSettings {
   };
 
   const order: string[] = ['direct', 'system'];
+  const usedIds = new Set<string>(['direct', 'system']);
+  const nameToId = new Map<string, string>([
+    ['direct', 'direct'],
+    ['Direct', 'direct'],
+    ['system', 'system'],
+    ['System', 'system'],
+    ['System Proxy', 'system'],
+  ]);
 
-  // Process all keys starting with '+'
+  const rawEntries: Array<{ item: RawProfileObject; rawName: string; profileId: string }> = [];
+
+  // Pass 1: compute unique profile IDs and map names to final IDs
   for (const [key, value] of Object.entries(raw)) {
     if (!key.startsWith('+') || typeof value !== 'object' || !value) {
       continue;
     }
-
     const item = value as RawProfileObject;
     const rawName = item.name || key.slice(1);
-    const profileId = rawName.toLowerCase().replace(/\s+/g, '_');
+    const baseId = rawName.toLowerCase().replace(/\s+/g, '_');
+    let profileId = baseId;
+    let suffix = 2;
+    while (usedIds.has(profileId)) {
+      profileId = `${baseId}_${suffix}`;
+      suffix++;
+    }
+    usedIds.add(profileId);
+    nameToId.set(rawName, profileId);
+    nameToId.set(rawName.toLowerCase(), profileId);
+    nameToId.set(key.slice(1), profileId);
+    nameToId.set(key.slice(1).toLowerCase(), profileId);
 
+    rawEntries.push({ item, rawName, profileId });
+  }
+
+  function resolveProfileId(name: string | undefined, fallback: string): string {
+    if (!name) return fallback;
+    return nameToId.get(name) || nameToId.get(name.toLowerCase()) || name.toLowerCase().replace(/\s+/g, '_');
+  }
+
+  // Pass 2: construct profiles with resolved references
+  for (const { item, rawName, profileId } of rawEntries) {
     switch (item.profileType) {
       case 'FixedProfile': {
         const fixed: FixedProfile = {
@@ -120,7 +150,7 @@ export function parseSwitchyOmegaBackup(jsonStr: string): AppSettings {
 
       case 'SwitchProfile': {
         const defaultProfileName = item.defaultProfileName || 'direct';
-        const defaultId = defaultProfileName.toLowerCase().replace(/\s+/g, '_');
+        const defaultId = resolveProfileId(defaultProfileName, 'direct');
 
         const sw: SwitchProfile = {
           id: profileId,
@@ -136,7 +166,7 @@ export function parseSwitchyOmegaBackup(jsonStr: string): AppSettings {
                   conditionType: r.condition?.conditionType || 'HostWildcardCondition',
                   pattern: r.condition?.pattern || '',
                 },
-                profileId: (r.profileName || 'direct').toLowerCase().replace(/\s+/g, '_'),
+                profileId: resolveProfileId(r.profileName, 'direct'),
                 note: r.note,
               }))
             : [],
@@ -146,8 +176,8 @@ export function parseSwitchyOmegaBackup(jsonStr: string): AppSettings {
             id: `rl_${Date.now()}`,
             url: item.ruleList.url,
             format: item.ruleList.format?.toLowerCase() === 'switchy' ? 'switchy' : 'autoproxy',
-            matchProfileId: (item.ruleList.matchProfileName || 'proxy').toLowerCase().replace(/\s+/g, '_'),
-            defaultProfileId: (item.ruleList.defaultProfileName || defaultProfileName).toLowerCase().replace(/\s+/g, '_'),
+            matchProfileId: resolveProfileId(item.ruleList.matchProfileName, 'proxy'),
+            defaultProfileId: resolveProfileId(item.ruleList.defaultProfileName || defaultProfileName, defaultId),
             enabled: item.ruleList.enabled ?? true,
             rulesCache: Array.isArray(item.ruleList.rules) ? item.ruleList.rules : undefined,
           };
@@ -173,7 +203,7 @@ export function parseSwitchyOmegaBackup(jsonStr: string): AppSettings {
 
       case 'VirtualProfile': {
         const targetName = item.defaultProfileName || 'direct';
-        const targetId = targetName.toLowerCase().replace(/\s+/g, '_');
+        const targetId = resolveProfileId(targetName, 'direct');
         const v: VirtualProfile = {
           id: profileId,
           name: rawName,
@@ -190,9 +220,8 @@ export function parseSwitchyOmegaBackup(jsonStr: string): AppSettings {
 
   const startupName = typeof raw['-startupProfileName'] === 'string' ? raw['-startupProfileName'] : '';
   const activeProfileId = startupName
-    ? startupName.toLowerCase().replace(/\s+/g, '_')
+    ? resolveProfileId(startupName, 'system')
     : (order[2] || 'system');
-
   return {
     activeProfileId: profiles[activeProfileId] ? activeProfileId : 'system',
     profiles,

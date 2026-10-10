@@ -176,14 +176,14 @@ export function conditionToPacCode(condition: RuleCondition): string {
 
     case 'HostWildcardCondition': {
       const reg = hostWildcardToRegExpString(pattern);
-      if (/[\r\n]/.test(reg)) return 'false'; // literal would break single-line PAC
+      if (/[\r\n\u2028\u2029]/.test(reg)) return 'false'; // literal would break single-line PAC
       return `/${reg}/i.test(host)`;
     }
 
     case 'HostRegexCondition': {
       try {
         const escaped = pattern.replace(/(?<!\\)\//g, '\\/');
-        if (/[\r\n]/.test(escaped)) return 'false'; // literal would break single-line PAC
+        if (/[\r\n\u2028\u2029]/.test(escaped)) return 'false'; // literal would break single-line PAC
         new RegExp(escaped, 'i');
         return `/${escaped}/i.test(host)`;
       } catch {
@@ -192,14 +192,14 @@ export function conditionToPacCode(condition: RuleCondition): string {
     }
     case 'UrlWildcardCondition': {
       const reg = `^${wildcardToRegExpString(pattern)}$`;
-      if (/[\r\n]/.test(reg)) return 'false'; // literal would break single-line PAC
+      if (/[\r\n\u2028\u2029]/.test(reg)) return 'false'; // literal would break single-line PAC
       return `/${reg}/i.test(url)`;
     }
 
     case 'UrlRegexCondition': {
       try {
         const escaped = pattern.replace(/(?<!\\)\//g, '\\/');
-        if (/[\r\n]/.test(escaped)) return 'false';
+        if (/[\r\n\u2028\u2029]/.test(escaped)) return 'false';
         new RegExp(escaped, 'i');
         return `/${escaped}/i.test(url)`;
       } catch {
@@ -214,7 +214,7 @@ export function conditionToPacCode(condition: RuleCondition): string {
       const [ip, bitsStr] = pattern.split('/');
       const bits = bitsStr ? parseInt(bitsStr, 10) : 32;
       const mask = cidrBitsToMask(bits);
-      return `isInNet(host, ${JSON.stringify(ip)}, ${JSON.stringify(mask)})`;
+      return `(/^\\d{1,3}(\\.\\d{1,3}){3}$/.test(host) && isInNet(host, ${JSON.stringify(ip)}, ${JSON.stringify(mask)}))`;
     }
 
     case 'BypassCondition': {
@@ -226,7 +226,7 @@ export function conditionToPacCode(condition: RuleCondition): string {
         const [ip, bitsStr] = pattern.split('/');
         const bits = bitsStr ? parseInt(bitsStr, 10) : 32;
         const mask = cidrBitsToMask(bits);
-        return `isInNet(host, ${JSON.stringify(ip)}, ${JSON.stringify(mask)})`;
+        return `(/^\\d{1,3}(\\.\\d{1,3}){3}$/.test(host) && isInNet(host, ${JSON.stringify(ip)}, ${JSON.stringify(mask)}))`;
       }
       if (p.startsWith('.')) {
         const domain = p.slice(1);

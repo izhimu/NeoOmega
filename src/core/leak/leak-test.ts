@@ -271,31 +271,26 @@ function gatherIceCandidatesPage(timeoutMs = 4000): IceCandidateInfo[] | Promise
  * WebRTC IP handling policies apply to web pages, NOT chrome-extension://
  * origins (extension pages keep full interface access). Gathering candidates
  * in the options page would show exposure no website can see. Run inside a
- * real tab instead: active http(s) tab if any, else a temp tab that is
- * closed afterwards.
+ * temporary tab that is closed afterwards.
  */
 export async function gatherIceCandidatesFromWebPage(timeoutMs = 15000): Promise<IceCandidateInfo[]> {
-  if (typeof chrome === 'undefined' || !chrome.scripting?.executeScript) {
+  if (typeof chrome === 'undefined' || !chrome.scripting?.executeScript || !chrome.tabs?.create) {
     return gatherIceCandidates();
   }
-  const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
-  let tabId = active?.url?.startsWith('http') ? active.id : undefined;
-  let tempTab = false;
-  if (tabId === undefined) {
+  let tabId: number | undefined;
+  try {
     const created = await chrome.tabs.create({ url: 'https://example.com', active: false });
     if (created.id === undefined) return [];
     tabId = created.id;
-    tempTab = true;
     // Wait for load (deadline shared with executeScript timeout below)
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const t = (await chrome.tabs.get(tabId)) as chrome.tabs.Tab;
       if (t.status === 'complete') break;
-      await new Promise((r) => setTimeout(r, 200));
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 200);
+      await promise;
     }
-  }
-  if (tabId === undefined) return [];
-  try {
     const results = await chrome.scripting.executeScript({
       target: { tabId },
       world: 'MAIN',
@@ -304,8 +299,10 @@ export async function gatherIceCandidatesFromWebPage(timeoutMs = 15000): Promise
     });
     return (results[0]?.result as IceCandidateInfo[] | undefined) ?? [];
   } catch {
-    return []; // restricted pages (e.g. Chrome Web Store) reject; don't abort the whole run
+    return []; // restricted pages reject; don't abort the whole run
   } finally {
-    if (tempTab) chrome.tabs.remove(tabId).catch(() => {});
+    if (tabId !== undefined) {
+      chrome.tabs.remove(tabId).catch(() => {});
+    }
   }
 }

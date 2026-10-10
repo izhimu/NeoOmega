@@ -396,6 +396,7 @@ export default defineContentScript({
       const count = hosts.length;
       const titleText = isZh ? `${count} 个域名无法访问` : `${count} Unreachable Host${count > 1 ? 's' : ''}`;
       const btnText = isZh ? '一键添加代理' : 'Proxy Hosts';
+      const muteText = isZh ? '不再提示' : "Don't Show Again";
 
       const chipsHtml = hosts
         .slice(0, 4)
@@ -416,12 +417,22 @@ export default defineContentScript({
           <div class="host-chip-list">${chipsHtml}</div>
         </div>
         <div class="actions">
+          <button class="ui-btn ghost mute-btn">${muteText}</button>
           <button class="ui-btn primary action-btn">${btnText}</button>
         </div>
 
       `;
 
       toastEl.querySelector('.close-btn')?.addEventListener('click', hideToast);
+
+      const muteBtn = toastEl.querySelector('.mute-btn') as HTMLButtonElement | null;
+      muteBtn?.addEventListener('click', () => {
+        if (!muteBtn) return;
+        muteBtn.disabled = true;
+        safeSendMessage({ type: 'MUTE_FAILURE_HOSTS', hosts });
+        for (const h of hosts) failedHosts.delete(h);
+        hideToast();
+      });
 
       const actionBtn = toastEl.querySelector('.action-btn') as HTMLButtonElement | null;
       actionBtn?.addEventListener('click', async () => {
@@ -590,6 +601,7 @@ export default defineContentScript({
         const navs = performance.getEntriesByType('navigation') as PerformanceNavigationTiming[];
         if (navs.length > 0) {
           const nav = navs[0];
+          if (!nav) return;
           const dur = nav.duration || (nav.responseEnd - nav.startTime);
           if (dur > THRESHOLD && window.location.hostname) {
             reportSlowHost(window.location.hostname, Math.round(dur));
@@ -644,6 +656,10 @@ export default defineContentScript({
     chrome.runtime.onMessage.addListener((message) => {
       if (message?.type === 'TAB_FAILED_RESOURCES' && message.host) {
         failedHosts.add(message.host);
+        renderToast();
+      }
+      if (message?.type === 'TAB_ERROR_RETRACTED' && message.host) {
+        failedHosts.delete(message.host);
         renderToast();
       }
       if (message?.type === 'SPEED_RECOMMENDATION' && message.recommendation) {

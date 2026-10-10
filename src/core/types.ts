@@ -126,6 +126,7 @@ export interface AppSettings {
   language?: 'auto' | 'zh_CN' | 'en';
   enableErrorMonitoring: boolean;
   enableFailureNotification?: boolean; // Show in-page toast for failed resources, default true
+  mutedFailureHosts?: string[]; // hosts excluded from the in-page failure toast
   enableSpeedRecommendation?: boolean; // Show speedup suggestions for slow hosts, default true
   ruleListUpdateInterval?: number; // minutes, default 120
   enableCloudSync?: boolean; // mirror profiles into chrome.storage.sync

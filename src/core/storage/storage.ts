@@ -66,6 +66,10 @@ export const DEFAULT_PROFILES: Record<string, Profile> = {
     bypassList: [
       { id: 'bp_1', conditionType: 'BypassCondition', pattern: '<local>' },
       { id: 'bp_2', conditionType: 'BypassCondition', pattern: '127.0.0.1/32' },
+      { id: 'bp_3', conditionType: 'BypassCondition', pattern: '127.0.0.0/8' },
+      { id: 'bp_4', conditionType: 'BypassCondition', pattern: '10.0.0.0/8' },
+      { id: 'bp_5', conditionType: 'BypassCondition', pattern: '172.16.0.0/12' },
+      { id: 'bp_6', conditionType: 'BypassCondition', pattern: '192.168.0.0/16' },
     ],
   } as FixedProfile,
   autoSwitch: {
@@ -135,7 +139,11 @@ export async function getSettings(): Promise<AppSettings> {
     await saveSettings(DEFAULT_SETTINGS);
     return DEFAULT_SETTINGS;
   }
-  const settings = result[STORAGE_KEY] as AppSettings;
+  const rawSettings = result[STORAGE_KEY];
+  if (typeof rawSettings !== 'object' || rawSettings === null || Array.isArray(rawSettings)) {
+    return structuredClone(DEFAULT_SETTINGS);
+  }
+  const settings = rawSettings as AppSettings;
   if (settings?.profiles) {
     for (const p of Object.values(settings.profiles)) {
       if (p.profileType === 'FixedProfile') {
@@ -174,12 +182,23 @@ const SYNC_META = 'neo_omega_sync_meta';
 const SYNC_CHUNK = 'neo_omega_sync_';
 const SYNC_CHUNK_SIZE = 2500; // sync quota: 8192 B/item; CJK chars are 3 B in UTF-8
 
-/** Strip bulky rule caches; sync quota is 100KB total */
+/** Strip bulky rule caches and credentials; sync quota is 100KB total */
 function stripForSync(settings: AppSettings): AppSettings {
   const plain = JSON.parse(JSON.stringify(settings)) as AppSettings;
   for (const p of Object.values(plain.profiles ?? {})) {
     if (p.profileType === 'SwitchProfile' && p.ruleList) {
       delete p.ruleList.rulesCache;
+    } else if (p.profileType === 'FixedProfile') {
+      const fp = p as FixedProfile;
+      if (fp.proxyForHttp) delete fp.proxyForHttp.auth;
+      if (fp.proxyForHttps) delete fp.proxyForHttps.auth;
+      if (fp.proxyForFtp) delete fp.proxyForFtp.auth;
+      if (fp.fallbackProxy) delete fp.fallbackProxy.auth;
+      if (Array.isArray(fp.fallbackServers)) {
+        for (const s of fp.fallbackServers) {
+          if (s) delete s.auth;
+        }
+      }
     }
   }
   return plain;

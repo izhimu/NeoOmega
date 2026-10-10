@@ -449,7 +449,7 @@ describe('Speed Recommendation Probes', () => {
     });
 
     expect(sw.rules).toHaveLength(1);
-    expect(sw.rules[0].condition.pattern).toBe('*.github.com');
-    expect(sw.rules[0].profileId).toBe('direct');
+    expect(sw.rules[0]!.condition.pattern).toBe('*.github.com');
+    expect(sw.rules[0]!.profileId).toBe('direct');
   });
 });
