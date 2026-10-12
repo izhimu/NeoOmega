@@ -3,9 +3,9 @@ import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { Toaster, toast } from 'vue-sonner';
 import { Settings, Activity, ArrowUpRight, Globe } from '@lucide/vue';
 import { getSettings } from '../../src/core/storage/storage';
-import type { AppSettings, Profile, SwitchRule, TabNetworkError } from '../../src/core/types';
+import type { AppSettings, Profile, TabNetworkError } from '../../src/core/types';
 import { matchCondition } from '../../src/core/pac/matcher';
-import { parseAutoProxyLine } from '../../src/core/parsers/autoproxy';
+import { parseRuleListCache } from '../../src/core/parsers/autoproxy';
 import { resolveProfile } from '../../src/core/pac/generator';
 import { useI18n, resolveLocale } from '../../src/core/i18n';
 import { applyTheme, initThemeListener } from '../../src/core/theme';
@@ -70,6 +70,7 @@ const routing = computed<{ kind: RoutingKind } | null>(() => {
   if (base.profileType === 'SwitchProfile') {
     let matchedId: string | null = null;
     for (const rule of base.rules) {
+      if (rule.enabled === false) continue;
       if (matchCondition(rule.condition, url, host)) {
         matchedId = rule.profileId;
         break;
@@ -77,9 +78,7 @@ const routing = computed<{ kind: RoutingKind } | null>(() => {
     }
     const rl = base.ruleList;
     if (matchedId === null && rl?.enabled && rl.rulesCache?.length) {
-      const parsed = rl.rulesCache
-        .map((l, i) => parseAutoProxyLine(l, i, rl.matchProfileId, rl.defaultProfileId))
-        .filter((r): r is SwitchRule => !!r);
+      const parsed = parseRuleListCache(rl.rulesCache, rl.matchProfileId, rl.defaultProfileId || base.defaultProfileId);
       for (const wantWhitelist of [true, false]) {
         for (const r of parsed) {
           if ((r.profileId !== rl.matchProfileId) !== wantWhitelist) continue;
@@ -110,7 +109,10 @@ const testFixedProfiles = async (force = false) => {
   const now = Date.now();
   const CACHE_TTL = 60 * 1000;
 
-  // Sequential: TEST_PROXY mutates global chrome.proxy.settings, background enforces single-flight
+  // Collect stale profiles, then ONE batch message: background probes all
+  // candidates in parallel through a single PAC write. Per-proxy TEST_PROXY
+  // would flip global chrome.proxy.settings 2N times mid-browse.
+  const pending: Array<{ id: string; proxy: unknown }> = [];
   for (const id of settings.value.order || []) {
     const profile = settings.value?.profiles?.[id];
     if (profile?.profileType === 'FixedProfile' && (profile as any).fallbackProxy?.host && (profile as any).fallbackProxy?.port) {
@@ -119,30 +121,42 @@ const testFixedProfiles = async (force = false) => {
         continue;
       }
       testingIds.value[id] = true;
-      try {
-        const proxyPayload = JSON.parse(JSON.stringify((profile as any).fallbackProxy));
-        await new Promise<void>((resolve) => {
-          chrome.runtime.sendMessage(
-            { type: 'TEST_PROXY', proxy: proxyPayload, testUrl: 'http://cp.cloudflare.com/generate_204' },
-            (res) => {
-              testingIds.value[id] = false;
-              if (chrome.runtime.lastError) {
-                latencies.value[id] = { success: false, error: chrome.runtime.lastError.message, timestamp: Date.now() };
-              } else if (res) {
-                latencies.value[id] = { ...res, timestamp: Date.now() };
-              }
-              resolve();
-            }
-          );
-        });
-      } catch {
-        testingIds.value[id] = false;
-      }
+      pending.push({ id, proxy: JSON.parse(JSON.stringify((profile as any).fallbackProxy)) });
     }
+  }
+  if (pending.length === 0) return;
+
+  try {
+    await new Promise<void>((resolve) => {
+      chrome.runtime.sendMessage(
+        { type: 'TEST_PROXIES', proxies: pending.map((p) => p.proxy), testUrl: 'https://www.google.com/generate_204' },
+        (res) => {
+          for (const { id } of pending) testingIds.value[id] = false;
+          if (chrome.runtime.lastError) {
+            for (const { id } of pending) {
+              latencies.value[id] = { success: false, error: chrome.runtime.lastError.message, timestamp: Date.now() };
+            }
+          } else if (res?.success && Array.isArray(res.results)) {
+            pending.forEach(({ id }, i) => {
+              const r = res.results[i];
+              if (r) latencies.value[id] = { ...r, timestamp: Date.now() };
+            });
+          } else {
+            for (const { id } of pending) {
+              latencies.value[id] = { success: false, error: res?.error || 'ERR', timestamp: Date.now() };
+            }
+          }
+          resolve();
+        }
+      );
+    });
+  } catch {
+    for (const { id } of pending) testingIds.value[id] = false;
   }
 
   if (typeof chrome !== 'undefined' && chrome.storage?.local) {
-    await chrome.storage.local.set({ neo_omega_latency_cache: latencies.value });
+    // Strip Vue reactivity before chrome.storage (structured-clone hazard)
+    await chrome.storage.local.set({ neo_omega_latency_cache: JSON.parse(JSON.stringify(latencies.value)) });
   }
 };
 
@@ -152,7 +166,7 @@ const retestProfile = async (id: string) => {
   testingIds.value[id] = true;
   const proxyPayload = JSON.parse(JSON.stringify((profile as any).fallbackProxy));
   chrome.runtime.sendMessage(
-    { type: 'TEST_PROXY', proxy: proxyPayload, testUrl: 'http://cp.cloudflare.com/generate_204' },
+    { type: 'TEST_PROXY', proxy: proxyPayload, testUrl: 'https://www.google.com/generate_204' },
     async (res) => {
       testingIds.value[id] = false;
       if (chrome.runtime.lastError) {
@@ -161,7 +175,7 @@ const retestProfile = async (id: string) => {
         latencies.value[id] = { ...res, timestamp: Date.now() };
       }
       if (typeof chrome !== 'undefined' && chrome.storage?.local) {
-        await chrome.storage.local.set({ neo_omega_latency_cache: latencies.value });
+        await chrome.storage.local.set({ neo_omega_latency_cache: JSON.parse(JSON.stringify(latencies.value)) });
       }
     }
   );
@@ -208,6 +222,7 @@ const loadState = async () => {
           chrome.runtime.sendMessage(
             { type: 'GET_TAB_ERRORS', tabId: currentTabId.value },
             (res) => {
+              if (chrome.runtime.lastError) return;
               if (res && res.errors) {
                 tabErrors.value = res.errors;
               }
@@ -256,10 +271,15 @@ const addQuickRule = (host: string) => {
   addingRule.value = true;
   chrome.runtime.sendMessage(
     { type: 'ADD_HOST_RULE', pattern: host, profileId: 'proxy', tabId: currentTabId.value },
-    (res) => {
+    async (res) => {
       addingRule.value = false;
-      if (res && res.success) {
+      const err = chrome.runtime.lastError;
+      if (!err && res && res.success) {
         tabErrors.value = tabErrors.value.filter((e) => e.host !== host);
+        settings.value = await getSettings();
+        reloadCurrentTab();
+      } else {
+        toast.error(res?.error || err?.message || t('popup.addRuleFailed'));
       }
     }
   );
@@ -277,8 +297,9 @@ const quickAddSite = (profileId: 'proxy' | 'direct') => {
     { type: 'ADD_HOST_RULE', pattern: currentTabHost.value, profileId, tabId: currentTabId.value },
     async (res) => {
       addingSiteRule.value = false;
-      const ok = !!(res && res.success);
-      siteRuleMsg.value = { ok, text: ok ? t('popup.ruleAdded') : (res?.error || t('popup.addRuleFailed')) };
+      const err = chrome.runtime.lastError;
+      const ok = !!(!err && res && res.success);
+      siteRuleMsg.value = { ok, text: ok ? t('popup.ruleAdded') : (res?.error || err?.message || t('popup.addRuleFailed')) };
       if (ok) {
         settings.value = await getSettings();
         reloadCurrentTab();
@@ -429,7 +450,7 @@ onUnmounted(() => {
               v-else-if="latencies[id]"
               class="text-[9px] font-mono px-1.5 py-0.5 rounded-full border leading-none font-medium cursor-pointer transition-transform hover:scale-105 select-none"
               :class="getLatencyClass(latencies[id])"
-              :title="latencies[id].success ? `${latencies[id].latency}ms (${t('popup.clickToRetest')})` : (latencies[id].error || '超时')"
+              :title="latencies[id].success ? `${latencies[id].latency}ms (${t('popup.clickToRetest')})` : (latencies[id].error || t('common.timeout'))"
               @click.stop="retestProfile(id)"
             >
               {{ latencies[id].success ? `${latencies[id].latency}ms` : 'ERR' }}

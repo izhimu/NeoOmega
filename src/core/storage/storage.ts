@@ -3,29 +3,13 @@
  * Typed persistence layer backed by chrome.storage.local
  */
 
-import type { AppSettings, DirectProfile, FixedProfile, Profile, RuleCondition, SwitchProfile, SystemProfile } from '../types';
+import type { AppSettings, DirectProfile, FixedProfile, Profile, ProxyServer, RuleCondition, SwitchProfile, SystemProfile } from '../types';
 
 export function normalizeBypassList(raw: unknown): RuleCondition[] {
   if (!raw) return [];
-  if (Array.isArray(raw)) {
-    return raw.map((item, idx) => {
-      if (typeof item === 'string') {
-        return {
-          id: `bp_${idx}_${item}`,
-          conditionType: 'BypassCondition',
-          pattern: item,
-        };
-      }
-      return {
-        id: item?.id || `bp_${idx}_${item?.pattern || ''}`,
-        conditionType: item?.conditionType || 'BypassCondition',
-        pattern: String(item?.pattern || ''),
-      };
-    });
-  }
   if (typeof raw === 'string') {
     return raw
-      .split(/[\r\n,]+/)
+      .split(/[\r\n,;]+/)
       .map((s) => s.trim())
       .filter((s) => s.length > 0)
       .map((pattern, idx) => ({
@@ -34,10 +18,77 @@ export function normalizeBypassList(raw: unknown): RuleCondition[] {
         pattern,
       }));
   }
+  if (Array.isArray(raw)) {
+    const list: RuleCondition[] = [];
+    for (const item of raw) {
+      if (!item) continue;
+      if (typeof item === 'string') {
+        const pattern = item.trim();
+        if (pattern) {
+          list.push({
+            id: `bp_${list.length}_${pattern}`,
+            conditionType: 'BypassCondition',
+            pattern,
+          });
+        }
+      } else if (typeof item === 'object') {
+        const obj = item as Record<string, unknown>;
+        const rawPattern = obj.pattern;
+        const pattern =
+          typeof rawPattern === 'string'
+            ? rawPattern.trim()
+            : rawPattern != null
+              ? String(rawPattern).trim()
+              : '';
+        if (pattern) {
+          const rawId = obj.id;
+          const rawConditionType = obj.conditionType;
+          list.push({
+            id: typeof rawId === 'string' && rawId ? rawId : `bp_${list.length}_${pattern}`,
+            conditionType:
+              typeof rawConditionType === 'string'
+                ? (rawConditionType as RuleCondition['conditionType'])
+                : 'BypassCondition',
+            pattern,
+          });
+        }
+      }
+    }
+    return list;
+  }
   if (typeof raw === 'object') {
+    if ('pattern' in (raw as Record<string, unknown>)) {
+      return normalizeBypassList([raw]);
+    }
     return normalizeBypassList(Object.values(raw as Record<string, unknown>));
   }
   return [];
+}
+
+export function normalizeSettings(settings: AppSettings): AppSettings {
+  if (settings?.profiles) {
+    for (const p of Object.values(settings.profiles)) {
+      if (!p || typeof p !== 'object') continue;
+      if (p.profileType === 'FixedProfile') {
+        const fp = p as FixedProfile;
+        fp.bypassList = normalizeBypassList(fp.bypassList);
+        if (!fp.fallbackProxy) {
+          fp.fallbackProxy = { host: '127.0.0.1', port: 7890, scheme: 'http' };
+        }
+      } else if (p.profileType === 'SwitchProfile') {
+        const sp = p as SwitchProfile;
+        if (!Array.isArray(sp.rules)) sp.rules = [];
+      }
+    }
+  }
+  if (!Array.isArray(settings.order)) {
+    if (settings.order && typeof settings.order === 'object') {
+      settings.order = Object.values(settings.order);
+    } else {
+      settings.order = Object.keys(settings.profiles || {});
+    }
+  }
+  return settings;
 }
 
 export const DEFAULT_PROFILES: Record<string, Profile> = {
@@ -125,45 +176,38 @@ const STORAGE_KEY = 'neo_omega_settings';
 
 export async function getSettings(): Promise<AppSettings> {
   if (typeof chrome === 'undefined' || !chrome.storage?.local) {
-    return DEFAULT_SETTINGS;
+    return structuredClone(DEFAULT_SETTINGS);
   }
   const result = await chrome.storage.local.get(STORAGE_KEY);
-  if (!result[STORAGE_KEY]) {
+  let rawSettings = result[STORAGE_KEY];
+  let adoptedFresh = false;
+  if (!rawSettings) {
     // Fresh install: adopt cloud-synced settings before stamping defaults,
     // otherwise the defaults' fresh settingsUpdatedAt forever out-dates the remote copy.
     const remote = await readSyncSnapshot();
     if (remote?.profiles) {
-      await saveSettings(remote);
-      return remote;
+      rawSettings = remote;
+      adoptedFresh = true;
+    } else {
+      const defaults = structuredClone(DEFAULT_SETTINGS);
+      await saveSettings(defaults);
+      return defaults;
     }
-    await saveSettings(DEFAULT_SETTINGS);
-    return DEFAULT_SETTINGS;
   }
-  const rawSettings = result[STORAGE_KEY];
-  if (typeof rawSettings !== 'object' || rawSettings === null || Array.isArray(rawSettings)) {
+  if (
+    typeof rawSettings !== 'object' ||
+    rawSettings === null ||
+    Array.isArray(rawSettings) ||
+    !('profiles' in rawSettings) ||
+    typeof rawSettings.profiles !== 'object' ||
+    rawSettings.profiles === null ||
+    Array.isArray(rawSettings.profiles)
+  ) {
     return structuredClone(DEFAULT_SETTINGS);
   }
-  const settings = rawSettings as AppSettings;
-  if (settings?.profiles) {
-    for (const p of Object.values(settings.profiles)) {
-      if (p.profileType === 'FixedProfile') {
-        const fp = p as FixedProfile;
-        fp.bypassList = normalizeBypassList(fp.bypassList);
-        if (!fp.fallbackProxy) {
-          fp.fallbackProxy = { host: '127.0.0.1', port: 7890, scheme: 'http' };
-        }
-      } else if (p.profileType === 'SwitchProfile') {
-        const sp = p as SwitchProfile;
-        if (!Array.isArray(sp.rules)) sp.rules = [];
-      }
-    }
-  }
-  if (!Array.isArray(settings.order)) {
-    if (settings.order && typeof settings.order === 'object') {
-      settings.order = Object.values(settings.order);
-    } else {
-      settings.order = Object.keys(settings.profiles || {});
-    }
+  const settings = normalizeSettings(rawSettings as AppSettings);
+  if (adoptedFresh) {
+    await saveSettings(settings);
   }
   return settings;
 }
@@ -184,54 +228,69 @@ const SYNC_CHUNK_SIZE = 2500; // sync quota: 8192 B/item; CJK chars are 3 B in U
 
 /** Strip bulky rule caches and credentials; sync quota is 100KB total */
 function stripForSync(settings: AppSettings): AppSettings {
-  const plain = JSON.parse(JSON.stringify(settings)) as AppSettings;
-  for (const p of Object.values(plain.profiles ?? {})) {
+  // Shallow-copy only what we strip — a full deep clone copies multi-MB
+  // ruleList caches and every server object just to delete keys afterwards.
+  const stripServer = <S extends ProxyServer | undefined>(s: S): S => {
+    if (!s?.auth) return s;
+    const c = { ...s };
+    delete c.auth;
+    return c as S; // cast: c is s minus an optional key
+  };
+  const profiles: Record<string, Profile> = { ...settings.profiles };
+  for (const [id, p] of Object.entries(profiles)) {
     if (p.profileType === 'SwitchProfile' && p.ruleList) {
-      delete p.ruleList.rulesCache;
+      const ruleList = { ...p.ruleList };
+      delete ruleList.rulesCache;
+      profiles[id] = { ...p, ruleList };
     } else if (p.profileType === 'FixedProfile') {
       const fp = p as FixedProfile;
-      if (fp.proxyForHttp) delete fp.proxyForHttp.auth;
-      if (fp.proxyForHttps) delete fp.proxyForHttps.auth;
-      if (fp.proxyForFtp) delete fp.proxyForFtp.auth;
-      if (fp.fallbackProxy) delete fp.fallbackProxy.auth;
-      if (Array.isArray(fp.fallbackServers)) {
-        for (const s of fp.fallbackServers) {
-          if (s) delete s.auth;
-        }
-      }
+      profiles[id] = {
+        ...fp,
+        proxyForHttp: stripServer(fp.proxyForHttp),
+        proxyForHttps: stripServer(fp.proxyForHttps),
+        proxyForFtp: stripServer(fp.proxyForFtp),
+        fallbackProxy: stripServer(fp.fallbackProxy),
+        fallbackServers: fp.fallbackServers?.map(stripServer),
+      };
     }
   }
-  return plain;
+  return { ...settings, profiles };
 }
+
+let syncQueue: Promise<void> = Promise.resolve();
 
 /** Push settings to chrome.storage.sync (chunked). Best-effort: logs, never throws. */
 export async function pushSettingsToSync(settings: AppSettings): Promise<void> {
   if (typeof chrome === 'undefined' || !chrome.storage?.sync || !settings.enableCloudSync) return;
-  try {
-    const text = JSON.stringify(stripForSync(settings));
-    const chunks: string[] = [];
-    for (let i = 0; i < text.length; i += SYNC_CHUNK_SIZE) {
-      chunks.push(text.slice(i, i + SYNC_CHUNK_SIZE));
-    }
-    const metaRes = await chrome.storage.sync.get(SYNC_META);
-    const oldChunks = (metaRes[SYNC_META] as { chunks?: number } | undefined)?.chunks ?? 0;
+  const doPush = async (): Promise<void> => {
+    try {
+      const text = JSON.stringify(stripForSync(settings));
+      const chunks: string[] = [];
+      for (let i = 0; i < text.length; i += SYNC_CHUNK_SIZE) {
+        chunks.push(text.slice(i, i + SYNC_CHUNK_SIZE));
+      }
+      const metaRes = await chrome.storage.sync.get(SYNC_META);
+      const oldChunks = (metaRes[SYNC_META] as { chunks?: number } | undefined)?.chunks ?? 0;
 
-    const items: Record<string, unknown> = {
-      [SYNC_META]: { chunks: chunks.length, updatedAt: settings.settingsUpdatedAt ?? 0 },
-    };
-    chunks.forEach((c, i) => { items[`${SYNC_CHUNK}${i}`] = c; });
-    await chrome.storage.sync.set(items);
+      const items: Record<string, unknown> = {
+        [SYNC_META]: { chunks: chunks.length, updatedAt: settings.settingsUpdatedAt ?? 0 },
+      };
+      chunks.forEach((c, i) => { items[`${SYNC_CHUNK}${i}`] = c; });
+      await chrome.storage.sync.set(items);
 
-    if (oldChunks > chunks.length) {
-      const orphans = Array.from(
-        { length: oldChunks - chunks.length },
-        (_, i) => `${SYNC_CHUNK}${chunks.length + i}`
-      );
-      await chrome.storage.sync.remove(orphans);
+      if (oldChunks > chunks.length) {
+        const orphans = Array.from(
+          { length: oldChunks - chunks.length },
+          (_, i) => `${SYNC_CHUNK}${chunks.length + i}`
+        );
+        await chrome.storage.sync.remove(orphans);
+      }
+    } catch (err) {
+      console.warn('[NeoOmega] sync push failed:', err);
     }
-  } catch (err) {
-    console.warn('[NeoOmega] sync push failed:', err);
-  }
+  };
+  syncQueue = syncQueue.then(doPush, doPush);
+  return syncQueue;
 }
 
 /** Read and assemble the sync snapshot; null when absent or corrupt. No staleness check. */
@@ -267,18 +326,70 @@ export async function adoptSyncSettings(): Promise<boolean> {
   if (!remote?.profiles) return false;
   const local = await getSettings();
   if (!local.enableCloudSync) return false; // user disabled sync locally; don't overwrite
-  for (const [id, remoteProfile] of Object.entries(remote.profiles)) {
-    if (remoteProfile.profileType === 'SwitchProfile' && remoteProfile.ruleList) {
-      const localProfile = local.profiles[id];
-      if (
-        localProfile?.profileType === 'SwitchProfile' &&
-        localProfile.ruleList?.rulesCache &&
-        !remoteProfile.ruleList.rulesCache
-      ) {
-        remoteProfile.ruleList.rulesCache = localProfile.ruleList.rulesCache;
+
+  const localAuthMap = new Map<string, Array<{ host: string; port: number; auth: { username?: string; password?: string } }>>();
+  for (const [id, profile] of Object.entries(local.profiles || {})) {
+    if (profile.profileType === 'FixedProfile') {
+      const fp = profile as FixedProfile;
+      const servers = [
+        fp.fallbackProxy,
+        fp.proxyForHttp,
+        fp.proxyForHttps,
+        fp.proxyForFtp,
+        ...(fp.fallbackServers ?? []),
+      ];
+      const authList: Array<{ host: string; port: number; auth: { username?: string; password?: string } }> = [];
+      for (const s of servers) {
+        if (s?.host && s?.port && s.auth) {
+          authList.push({ host: s.host, port: s.port, auth: s.auth });
+        }
+      }
+      if (authList.length > 0) {
+        localAuthMap.set(id, authList);
       }
     }
   }
+
+  for (const [id, remoteProfile] of Object.entries(remote.profiles)) {
+    if (remoteProfile.profileType === 'FixedProfile') {
+      const authList = localAuthMap.get(id);
+      if (authList) {
+        const fp = remoteProfile as FixedProfile;
+        const servers = [
+          fp.fallbackProxy,
+          fp.proxyForHttp,
+          fp.proxyForHttps,
+          fp.proxyForFtp,
+          ...(fp.fallbackServers ?? []),
+        ];
+        for (const s of servers) {
+          if (s?.host && s?.port && !s.auth) {
+            const match = authList.find(
+              (a) => a.host.toLowerCase() === s.host.toLowerCase() && a.port === s.port
+            );
+            if (match) {
+              s.auth = match.auth;
+            }
+          }
+        }
+      }
+    } else if (remoteProfile.profileType === 'SwitchProfile' && remoteProfile.ruleList) {
+      const localProfile = local.profiles[id];
+      if (
+        localProfile?.profileType === 'SwitchProfile' &&
+        localProfile.ruleList?.url === remoteProfile.ruleList.url
+      ) {
+        if (localProfile.ruleList.rulesCache && !remoteProfile.ruleList.rulesCache) {
+          remoteProfile.ruleList.rulesCache = localProfile.ruleList.rulesCache;
+        }
+        if (localProfile.ruleList.lastUpdate && !remoteProfile.ruleList.lastUpdate) {
+          remoteProfile.ruleList.lastUpdate = localProfile.ruleList.lastUpdate;
+        }
+      }
+    }
+  }
+
+  normalizeSettings(remote);
   await chrome.storage.local.set({ [STORAGE_KEY]: remote });
   return true;
 }
@@ -286,7 +397,7 @@ export async function adoptSyncSettings(): Promise<boolean> {
 export async function getActiveProfile(): Promise<Profile> {
   const settings = await getSettings();
   const profile = settings.profiles[settings.activeProfileId];
-  return profile || settings.profiles['direct'] || (DEFAULT_PROFILES['direct'] as Profile);
+  return profile || settings.profiles['direct'] || structuredClone(DEFAULT_PROFILES['direct'] as Profile);
 }
 
 export async function setActiveProfileId(profileId: string): Promise<AppSettings> {

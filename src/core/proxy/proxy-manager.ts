@@ -30,9 +30,23 @@ const clearProxy = (): Promise<void> => {
 };
 
 export class ProxyManager {
-  /** Drop cached proxy state; required after any direct chrome.proxy.settings write (e.g. proxy test) */
+  /** Reset cached proxy state (tests). */
   static invalidateCache(): void {
     lastAppliedKey = null;
+  }
+
+  /**
+   * Write a raw PAC through the serialized queue (speed-probe scripts).
+   * Keeps lastAppliedKey in sync so restore is a plain applyProfile.
+   */
+  static async setRawPac(pacData: string): Promise<void> {
+    if (typeof chrome === 'undefined' || !chrome.proxy?.settings) {
+      throw new Error('Chrome proxy API not available');
+    }
+    await setProxy(
+      { mode: 'pac_script', pacScript: { data: pacData, mandatory: true } },
+      `pacdata:${pacData}`
+    );
   }
 
   /**
@@ -104,9 +118,11 @@ export class ProxyManager {
    */
   static async applyCurrentActive(): Promise<void> {
     const settings = await getSettings();
-    const active = settings.profiles[settings.activeProfileId];
+    const active = settings.profiles[settings.activeProfileId] || settings.profiles['direct'];
     if (active) {
       await this.applyProfile(active, settings.profiles);
+    } else {
+      await clearProxy();
     }
   }
 
@@ -114,14 +130,16 @@ export class ProxyManager {
    * Update browser action badge reflecting active profile
    */
   static async updateBadge(profile: Profile): Promise<void> {
-    if (typeof chrome === 'undefined' || !chrome.action) return;
+    if (typeof chrome === 'undefined') return;
+    const badgeApi = chrome.action || (chrome as any).browserAction;
+    if (!badgeApi) return;
 
     // Use first 2 chars of profile name
     const text = profile.name.slice(0, 2).toUpperCase();
-    await chrome.action.setBadgeText({ text });
+    await badgeApi.setBadgeText({ text });
 
     if (profile.color) {
-      await chrome.action.setBadgeBackgroundColor({ color: profile.color });
+      await badgeApi.setBadgeBackgroundColor({ color: profile.color });
     }
   }
 }

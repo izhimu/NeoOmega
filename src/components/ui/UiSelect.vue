@@ -31,6 +31,8 @@ interface Props {
   contentClass?: string;
 }
 
+defineOptions({ inheritAttrs: false }); // attrs (id/aria-*) belong on SelectTrigger
+
 const props = withDefaults(defineProps<Props>(), {
   modelValue: '',
   options: () => [],
@@ -65,6 +67,7 @@ const triggerSizeClass = computed(() => {
       @update:model-value="onValueChange"
     >
       <SelectTrigger
+        v-bind="$attrs"
         :class="cn(
           'flex w-full items-center justify-between bg-slate-50 dark:bg-slate-950/80 border border-slate-200 dark:border-white/10 text-slate-800 dark:text-slate-100 shadow-xs transition-all duration-150 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:cursor-not-allowed disabled:opacity-50 select-none cursor-pointer',
           triggerSizeClass,

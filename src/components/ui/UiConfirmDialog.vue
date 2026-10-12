@@ -43,7 +43,6 @@ const handleConfirm = () => {
   <UiDialog
     :open="open"
     :title="title"
-    :description="description"
     max-width="max-w-sm"
     @update:open="emit('update:open', $event)"
   >

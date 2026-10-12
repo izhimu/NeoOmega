@@ -1,7 +1,7 @@
 import { fetchAndParseRuleList } from '../src/core/parsers/autoproxy';
 import { initAuthManager, setTempProxyCredentials, clearTempProxyCredentials } from '../src/core/proxy/auth-manager';
-import { generateTestPacScript, generateProbePacScript, formatFixedChain } from '../src/core/pac/generator';
-import { matchSwitchProfile } from '../src/core/pac/matcher';
+import { generateTestPacScript, generateBatchProbePacScript, formatFixedChain, formatProxyDirective, resolveProfile } from '../src/core/pac/generator';
+import { matchSwitchProfileFull } from '../src/core/pac/matcher';
 import { ProxyManager } from '../src/core/proxy/proxy-manager';
 import { getSettings, saveSettings, setActiveProfileId, adoptSyncSettings } from '../src/core/storage/storage';
 import type { AppSettings, FixedProfile, Profile, ProxyServer, RuleListConfig, SwitchProfile, SwitchRule, TabNetworkError, TabRequestLog } from '../src/core/types';
@@ -83,8 +83,10 @@ export default defineBackground(() => {
       if (ruleListOverride) Object.assign(freshProfile.ruleList, ruleListOverride);
       freshProfile.ruleList.rulesCache = text.split(/\r?\n/);
       freshProfile.ruleList.lastUpdate = Date.now();
-      if (freshSettings.activeProfileId === profileId) {
-        await ProxyManager.applyProfile(freshProfile, freshSettings.profiles);
+      const resolved = resolveProfile(freshSettings.activeProfileId, freshSettings.profiles);
+      if (resolved?.id === profileId || freshSettings.activeProfileId === profileId) {
+        const active = freshSettings.profiles[freshSettings.activeProfileId] || freshProfile;
+        await ProxyManager.applyProfile(active, freshSettings.profiles);
       }
       await saveSettings(freshSettings);
     }
@@ -139,9 +141,9 @@ export default defineBackground(() => {
   let speedProbeRunning = false;
   let speedProbeAbort: AbortController | null = null;
 
-  // Direct fetch fails (e.g. GFWList unreachable without proxy): retry once,
-  // then silently route ONLY the rule-list host through the first configured
-  // Fixed proxy via a temporary PAC. Active profile is never switched.
+  // Direct fetch fails (e.g. GFWList unreachable without proxy): silently
+  // route ONLY the rule-list host through the first configured Fixed proxy
+  // via a temporary PAC. Active profile is never switched.
   const fetchRuleListWithFallback = async (
     url: string,
     matchProfileId: string,
@@ -151,10 +153,6 @@ export default defineBackground(() => {
     try {
       return await fetchAndParseRuleList(url, matchProfileId, defaultProfileId);
     } catch (directErr) {
-      try {
-        return await fetchAndParseRuleList(url, matchProfileId, defaultProfileId);
-      } catch { /* fall through to proxy fallback */ }
-
       let proxy: ProxyServer | null = null;
       for (const id of settings.order) {
         const p = settings.profiles[id];
@@ -183,12 +181,7 @@ export default defineBackground(() => {
         const activeProfile = settings.profiles[settings.activeProfileId];
         const pac = generateTestPacScript(proxy, targetHost, activeProfile, settings.profiles);
 
-        const { promise: setPromise, resolve: setResolve, reject: setReject } = Promise.withResolvers<void>();
-        chrome.proxy.settings.set(
-          { value: { mode: 'pac_script', pacScript: { data: pac, mandatory: true } }, scope: 'regular' },
-          () => (chrome.runtime.lastError ? setReject(new Error(chrome.runtime.lastError.message)) : setResolve())
-        );
-        await setPromise;
+        await ProxyManager.setRawPac(pac);
         const { promise: delayPromise, resolve: delayResolve } = Promise.withResolvers<void>();
         setTimeout(delayResolve, 60);
         await delayPromise;
@@ -201,15 +194,10 @@ export default defineBackground(() => {
       } finally {
         ruleListFallbackRunning = false;
         clearTempProxyCredentials();
-        ProxyManager.invalidateCache(); // temp PAC wrote proxy settings directly; force re-apply
         try {
-          // Re-read settings: user may have switched profiles during the fetch.
+          // Re-reads settings: user may have switched profiles during the fetch.
           if (!userTestRunning && !speedProbeRunning) {
-            const fresh = await getSettings();
-            const current = fresh.profiles[fresh.activeProfileId];
-            if (current) {
-              await ProxyManager.applyProfile(current, fresh.profiles);
-            }
+            await ProxyManager.applyCurrentActive();
           }
         } catch (restoreErr) {
           console.error('[NeoOmega] Failed to restore proxy after rule-list fallback:', restoreErr);
@@ -218,20 +206,18 @@ export default defineBackground(() => {
     }
   };
 
-  let userTestQueue: Promise<any> = Promise.resolve();
+  let userTestQueue: Promise<unknown> = Promise.resolve();
 
+  // Bandwidth test: downloads MBs through ONE proxy via a dedicated PAC.
+  // (Latency tests go through executeBatchLatencyTest — one PAC write for N proxies.)
   const executeProxyTest = async (
     proxy: ProxyServer,
-    testUrl?: string,
-    mode: 'latency' | 'bandwidth' = 'latency'
+    testUrl?: string
   ) => {
     if (typeof chrome === 'undefined' || !chrome.proxy?.settings) {
       throw new Error('Chrome proxy API not available');
     }
-    const defaultUrl = mode === 'bandwidth'
-      ? 'https://speed.cloudflare.com/__down?bytes=5000000'
-      : 'http://cp.cloudflare.com/generate_204';
-    const effectiveTestUrl = testUrl?.trim() || defaultUrl;
+    const effectiveTestUrl = testUrl?.trim() || 'https://speed.cloudflare.com/__down?bytes=5000000';
 
     let timeoutId: TimeoutHandle | undefined;
     const startTime = performance.now();
@@ -254,25 +240,7 @@ export default defineBackground(() => {
 
       const testPac = generateTestPacScript(proxy, targetHost, activeProfile, settings.profiles);
 
-      const { promise: setPromise, resolve: setResolve, reject: setReject } = Promise.withResolvers<void>();
-      chrome.proxy.settings.set(
-        {
-          value: {
-            mode: 'pac_script',
-            pacScript: { data: testPac, mandatory: true },
-          },
-          scope: 'regular',
-        },
-        () => {
-          if (chrome.runtime.lastError) {
-            setReject(new Error(chrome.runtime.lastError.message));
-          } else {
-            setResolve();
-          }
-        }
-      );
-      await setPromise;
-
+      await ProxyManager.setRawPac(testPac);
       const { promise: delayPromise, resolve: delayResolve } = Promise.withResolvers<void>();
       setTimeout(delayResolve, 60);
       await delayPromise;
@@ -281,8 +249,7 @@ export default defineBackground(() => {
       urlWithBuster.searchParams.set('_t', Date.now().toString());
 
       const controller = new AbortController();
-      const timeoutMs = mode === 'bandwidth' ? 18000 : 8000;
-      timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+      timeoutId = setTimeout(() => controller.abort(), 18000);
 
       const res = await fetch(urlWithBuster.toString(), {
         method: 'GET',
@@ -293,30 +260,26 @@ export default defineBackground(() => {
         throw new Error(`HTTP ${res.status} ${res.statusText}`);
       }
 
+      const reader = res.body?.getReader();
+      let bytesCount = 0;
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) bytesCount += value.byteLength;
+        }
+      } else {
+        const blob = await res.blob();
+        bytesCount = blob.size;
+      }
+      const totalBytes = bytesCount;
       let speedMBps: number | undefined;
       let speedMbps: number | undefined;
-      let totalBytes: number | undefined;
-
-      if (mode === 'bandwidth') {
-        const reader = res.body?.getReader();
-        let bytesCount = 0;
-        if (reader) {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            if (value) bytesCount += value.byteLength;
-          }
-        } else {
-          const blob = await res.blob();
-          bytesCount = blob.size;
-        }
-        totalBytes = bytesCount;
-        const totalDurationSec = (performance.now() - startTime) / 1000;
-        if (totalDurationSec > 0 && bytesCount > 0) {
-          const bytesPerSec = bytesCount / totalDurationSec;
-          speedMBps = Number((bytesPerSec / (1024 * 1024)).toFixed(2));
-          speedMbps = Number(((bytesPerSec * 8) / 1000000).toFixed(2));
-        }
+      const totalDurationSec = (performance.now() - startTime) / 1000;
+      if (totalDurationSec > 0 && bytesCount > 0) {
+        const bytesPerSec = bytesCount / totalDurationSec;
+        speedMBps = Number((bytesPerSec / (1024 * 1024)).toFixed(2));
+        speedMbps = Number(((bytesPerSec * 8) / 1000000).toFixed(2));
       }
 
       const latency = Math.round(performance.now() - startTime);
@@ -328,7 +291,7 @@ export default defineBackground(() => {
         speedMbps,
         totalBytes,
         durationSec,
-        mode,
+        mode: 'bandwidth',
         status: res.status,
         statusText: res.statusText,
         testUrl: effectiveTestUrl,
@@ -342,7 +305,7 @@ export default defineBackground(() => {
       return {
         success: false,
         latency,
-        mode,
+        mode: 'bandwidth',
         error: errMsg,
         testUrl: effectiveTestUrl,
       };
@@ -350,19 +313,114 @@ export default defineBackground(() => {
       if (timeoutId) clearTimeout(timeoutId);
       // proxy restored below
       clearTempProxyCredentials();
-      ProxyManager.invalidateCache(); // test wrote proxy settings directly; force re-apply
       try {
-        // Re-read settings: user may have switched profiles while the test ran.
-        // Restoring the stale snapshot would clobber the new active profile.
-        const fresh = await getSettings();
-        const current = fresh.profiles[fresh.activeProfileId];
-        if (current) {
-          await ProxyManager.applyProfile(current, fresh.profiles);
-        } else {
-          const { promise: clearPromise, resolve: clearResolve } = Promise.withResolvers<void>();
-          chrome.proxy.settings.clear({ scope: 'regular' }, () => clearResolve());
-          await clearPromise;
+        // Re-reads settings: user may have switched profiles while the test ran.
+        await ProxyManager.applyCurrentActive();
+      } catch (cleanupErr) {
+        console.error('[NeoOmega] Failed to restore proxy after test:', cleanupErr);
+      }
+    }
+  };
+
+  // User tests preempt the background speed probe
+  const preemptSpeedProbe = async () => {
+    if (speedProbeRunning && speedProbeAbort) {
+      speedProbeAbort.abort();
+      for (let i = 0; i < 6 && speedProbeRunning; i++) {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setTimeout(resolve, 50);
+        await promise;
+      }
+    }
+    // Rule-list fallback briefly owns proxy settings via a temp PAC — wait it
+    // out (cap 30s) so a user test can't strand/overwrite it mid-flight.
+    for (let i = 0; i < 300 && ruleListFallbackRunning; i++) {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 100);
+      await promise;
+    }
+  };
+
+  // Latency test for N proxies with ONE global proxy write: batch probe PAC +
+  // per-candidate URL path markers, parallel fetches (same scheme as the speed
+  // probe). Sequential TEST_PROXY would flip chrome.proxy.settings 2N times and
+  // recompile the full PAC N times — user traffic churns the whole run.
+  const executeBatchLatencyTest = async (
+    proxies: ProxyServer[],
+    testUrl?: string
+  ): Promise<Array<Record<string, unknown>>> => {
+    if (proxies.length === 0) return [];
+    if (typeof chrome === 'undefined' || !chrome.proxy?.settings) {
+      throw new Error('Chrome proxy API not available');
+    }
+    const effectiveTestUrl = testUrl?.trim() || 'https://www.google.com/generate_204';
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(effectiveTestUrl);
+    } catch {
+      throw new Error('无效的测试目标 URL');
+    }
+    const targetHost = parsedUrl.hostname;
+    const settings = await getSettings();
+    const activeProfile = settings.profiles[settings.activeProfileId];
+
+    const batchPac = generateBatchProbePacScript(
+      proxies.map((p, i) => ({ marker: String(i), directive: formatProxyDirective(p) })),
+      targetHost,
+      activeProfile,
+      settings.profiles
+    );
+    try {
+      await ProxyManager.setRawPac(batchPac);
+      const { promise: settlePromise, resolve: settleResolve } = Promise.withResolvers<void>();
+      setTimeout(settleResolve, 120);
+      await settlePromise;
+      const results = await Promise.all(proxies.map(async (p, i) => {
+        // ponytail: temp creds are a single global slot — two different
+        // authenticated proxies in one batch race (same ceiling as speed probe)
+        if (p.auth?.username) setTempProxyCredentials(p.host, p.port, p.auth);
+        const start = performance.now();
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
+        try {
+          // Marker rides the REAL testUrl path as a query param: the request
+          // hits the true origin path (a path-marker would let local proxy
+          // software answer instantly, measuring localhost instead of the
+          // proxy's RTT to the target). Any HTTP response proves delivery.
+          const probeUrl = new URL(effectiveTestUrl);
+          probeUrl.searchParams.set('__neo_probe', String(i));
+          probeUrl.searchParams.set('_t', String(Date.now()));
+          const res = await fetch(probeUrl.toString(), {
+            signal: controller.signal,
+            cache: 'no-store',
+            redirect: 'manual',
+          });
+          try { await res.body?.cancel(); } catch {}
+          return {
+            success: true,
+            latency: Math.round(performance.now() - start),
+            status: res.status,
+            statusText: res.statusText,
+            testUrl: effectiveTestUrl,
+            mode: 'latency',
+          };
+        } catch (err) {
+          let errMsg = err instanceof Error ? err.message : String(err);
+          if (err instanceof Error && err.name === 'AbortError') errMsg = '连接超时 (Timeout)';
+          return { success: false, latency: Math.round(performance.now() - start), error: errMsg, testUrl: effectiveTestUrl, mode: 'latency' };
+        } finally {
+          clearTimeout(timeoutId);
         }
+      }));
+      // Sub-10ms success means the proxy answered locally without contacting
+      // the target — surface it so bogus-fast readings are diagnosable.
+      console.log('[NeoOmega] Latency test results:', results.map((r, i) => ({ proxy: `${proxies[i]?.host}:${proxies[i]?.port}`, latency: r.latency, status: r.status, error: r.error })));
+      return results;
+    } finally {
+      clearTempProxyCredentials();
+      try {
+        // Re-reads settings: user may have switched profiles while the test ran.
+        await ProxyManager.applyCurrentActive();
       } catch (cleanupErr) {
         console.error('[NeoOmega] Failed to restore proxy after test:', cleanupErr);
       }
@@ -374,20 +432,41 @@ export default defineBackground(() => {
     testUrl?: string,
     mode: 'latency' | 'bandwidth' = 'latency'
   ) => {
-    // Abort active background speed probe immediately to prioritize user test
-    if (speedProbeRunning && speedProbeAbort) {
-      speedProbeAbort.abort();
-      for (let i = 0; i < 6 && speedProbeRunning; i++) {
-        const { promise, resolve } = Promise.withResolvers<void>();
-        setTimeout(resolve, 50);
-        await promise;
-      }
-    }
+    await preemptSpeedProbe();
 
     const run = async () => {
       userTestRunning = true;
       try {
-        return await executeProxyTest(proxy, testUrl, mode);
+        if (mode === 'bandwidth') {
+          // Bandwidth downloads MBs through one proxy; keep the dedicated PAC path
+          return await executeProxyTest(proxy, testUrl);
+        }
+        const results = await executeBatchLatencyTest([proxy], testUrl);
+        return results[0];
+      } finally {
+        userTestRunning = false;
+      }
+    };
+
+    const next = userTestQueue.then(run, run);
+    userTestQueue = next.catch(() => {});
+    return await next;
+  };
+
+  const testProxyServers = async (proxies: ProxyServer[], testUrl?: string) => {
+    await preemptSpeedProbe();
+
+    const run = async () => {
+      userTestRunning = true;
+      try {
+        // Keep results index-aligned with the caller's array: invalid entries
+        // get a failure result, valid ones are batch-tested.
+        const validIdx = proxies.map((p, i) => (p && p.host ? i : -1)).filter((i) => i >= 0);
+        const tested = await executeBatchLatencyTest(validIdx.map((i) => proxies[i]!), testUrl);
+        return proxies.map((p, i) => {
+          const slot = validIdx.indexOf(i);
+          return slot >= 0 ? tested[slot] : { success: false, error: 'No proxy server configured' };
+        });
       } finally {
         userTestRunning = false;
       }
@@ -408,13 +487,15 @@ export default defineBackground(() => {
   const mutedFailureHosts = new Set<string>();
   const analyzedHostsCache = new Map<string, number>();
 
-  const probeCandidate = async (
+  // Fetch through one candidate of the already-installed batch probe PAC.
+  // The URL path marker selects the candidate; redirect:'manual' keeps the
+  // marker (a stripped redirect would silently re-route via normal rules).
+  const probeFetch = async (
     candidate: { id: string; name: string; directive: string; auth?: ProxyAuth },
-    host: string,
-    activeProfile?: Profile,
-    allProfiles: Record<string, Profile> = {}
+    marker: string,
+    host: string
   ): Promise<number | null> => {
-    if (typeof chrome === 'undefined' || !chrome.proxy?.settings || speedProbeAbort?.signal.aborted || userTestRunning || ruleListFallbackRunning) return null;
+    if (speedProbeAbort?.signal.aborted || userTestRunning || ruleListFallbackRunning) return null;
     if (candidate.auth?.username) {
       const rawTarget = candidate.directive.replace(/^[A-Z0-9]+\s+/, '').split(';')[0]?.trim() ?? '';
       const lastColon = rawTarget.lastIndexOf(':');
@@ -424,60 +505,33 @@ export default defineBackground(() => {
         if (h && !isNaN(p)) setTempProxyCredentials(h, p, candidate.auth);
       }
     }
-    const probePac = generateProbePacScript(candidate.directive, host, activeProfile, allProfiles);
-    const { promise: setPromise, resolve: setResolve, reject: setReject } = Promise.withResolvers<void>();
-    chrome.proxy.settings.set(
-      {
-        value: { mode: 'pac_script', pacScript: { data: probePac, mandatory: true } },
-        scope: 'regular',
-      },
-      () => {
-        if (chrome.runtime.lastError) setReject(new Error(chrome.runtime.lastError.message));
-        else setResolve();
+    const attempt = async (scheme: string, timeoutMs: number): Promise<number> => {
+      const start = performance.now();
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const signal = speedProbeAbort
+        ? AbortSignal.any([controller.signal, speedProbeAbort.signal])
+        : controller.signal;
+      try {
+        // Root path + query marker: real origin request, not a short-circuitable path.
+        const res = await fetch(`${scheme}://${host}/?__neo_probe=${marker}&_t=${Date.now()}`, {
+          method: 'GET',
+          signal,
+          cache: 'no-store',
+          redirect: 'manual',
+        });
+        try { await res.body?.cancel(); } catch {}
+        return Math.round(performance.now() - start);
+      } finally {
+        clearTimeout(timer);
       }
-    );
+    };
     try {
-      await setPromise;
+      return await attempt('https', 2000);
     } catch {
-      return null;
-    }
-    const { promise: delayPromise, resolve: delayResolve } = Promise.withResolvers<void>();
-    setTimeout(delayResolve, 120);
-    await delayPromise;
-    if (speedProbeAbort?.signal.aborted || userTestRunning || ruleListFallbackRunning) return null;
-
-    const start = performance.now();
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 3000);
-    const probeSignal = speedProbeAbort
-      ? AbortSignal.any([controller.signal, speedProbeAbort.signal])
-      : controller.signal;
-    try {
-      const res = await fetch(`https://${host}/`, {
-        method: 'GET',
-        signal: probeSignal,
-        cache: 'no-store',
-      });
-      clearTimeout(timer);
-      try { await res.body?.cancel(); } catch {}
-      return Math.round(performance.now() - start);
-    } catch {
-      clearTimeout(timer);
       if (speedProbeAbort?.signal.aborted || userTestRunning || ruleListFallbackRunning) return null;
       try {
-        const httpCtrl = new AbortController();
-        const httpTimer = setTimeout(() => httpCtrl.abort(), 2000);
-        const httpSignal = speedProbeAbort
-          ? AbortSignal.any([httpCtrl.signal, speedProbeAbort.signal])
-          : httpCtrl.signal;
-        const httpRes = await fetch(`http://${host}/`, {
-          method: 'GET',
-          signal: httpSignal,
-          cache: 'no-store',
-        });
-        clearTimeout(httpTimer);
-        try { await httpRes.body?.cancel(); } catch {}
-        return Math.round(performance.now() - start);
+        return await attempt('http', 1000);
       } catch {
         return null;
       }
@@ -485,8 +539,9 @@ export default defineBackground(() => {
   };
 
   const analyzeSlowHosts = async (
-    hosts: Array<{ host: string; duration: number }>,
-    tabId?: number
+    hosts: Array<{ host: string; duration: number; protocol?: string }>,
+    tabId?: number,
+    protocol?: string
   ) => {
     if (!speedRecommendationOn || userTestRunning || speedProbeRunning || ruleListFallbackRunning || !hosts.length || !tabId) return;
     const settings = await getSettings();
@@ -501,60 +556,95 @@ export default defineBackground(() => {
     );
     if (fixedCandidates.length === 0) return;
     const now = Date.now();
-    const target = hosts.find((h) => now - (analyzedHostsCache.get(h.host) || 0) > 60000);
+    const target = hosts.find((h) => now - (analyzedHostsCache.get(h.host) || 0) > 300000);
     if (!target) return;
+    if (analyzedHostsCache.size > 2000) analyzedHostsCache.clear();
     analyzedHostsCache.set(target.host, now);
-    const currentProfileId = matchSwitchProfile(activeProfile as SwitchProfile, `https://${target.host}/`, target.host);
+    const targetProto = target.protocol === 'http:' || target.protocol === 'http' || protocol === 'http:' || protocol === 'http'
+      ? 'http:'
+      : 'https:';
+    const currentProfileId = matchSwitchProfileFull(activeProfile as SwitchProfile, `${targetProto}//${target.host}/`, target.host);
+    // Current route must be a measured candidate — otherwise no honest baseline.
+    const resolvedCurrent = resolveProfile(currentProfileId, settings.profiles);
+    const currentIsFixed = resolvedCurrent?.profileType === 'FixedProfile';
+    const currentKey = currentIsFixed ? resolvedCurrent.id : 'direct';
+    const seen = new Set<string>();
+    const candidates: Array<{ id: string; name: string; directive: string; auth?: ProxyAuth }> = [];
+    const pushCandidate = (c: { id: string; name: string; directive: string; auth?: ProxyAuth }) => {
+      if (!seen.has(c.id)) {
+        seen.add(c.id);
+        candidates.push(c);
+      }
+    };
+    if (currentIsFixed) {
+      const cur = resolvedCurrent as FixedProfile;
+      pushCandidate({ id: cur.id, name: cur.name, directive: formatFixedChain(cur), auth: cur.fallbackProxy?.auth });
+    }
+    pushCandidate({ id: 'direct', name: '直连', directive: 'DIRECT' });
+    for (const p of fixedCandidates.slice(0, 2)) {
+      pushCandidate({ id: p.id, name: p.name, directive: formatFixedChain(p), auth: p.fallbackProxy?.auth });
+    }
 
-    const candidates: Array<{ id: string; name: string; directive: string; auth?: ProxyAuth }> = [
-      { id: 'direct', name: '直连', directive: 'DIRECT' },
-      ...fixedCandidates.slice(0, 3).map((p) => ({
-        id: p.id,
-        name: p.name,
-        directive: formatFixedChain(p),
-        auth: p.fallbackProxy?.auth,
-      })),
-    ];
-
+    const abortController = new AbortController();
     speedProbeRunning = true;
-    speedProbeAbort = new AbortController();
+    speedProbeAbort = abortController;
     const probeResults: Array<{ id: string; name: string; latency: number | null }> = [];
     try {
-      for (const cand of candidates) {
-        if (speedProbeAbort.signal.aborted || userTestRunning || ruleListFallbackRunning) break;
-        const lat = await probeCandidate(cand, target.host, activeProfile, settings.profiles);
-        probeResults.push({ id: cand.id, name: cand.name, latency: lat });
+      // One global write for the whole session: batch PAC, per-candidate URL markers.
+      const batchPac = generateBatchProbePacScript(
+        candidates.map((c, i) => ({ marker: String(i), directive: c.directive })),
+        target.host,
+        activeProfile,
+        settings.profiles
+      );
+      await ProxyManager.setRawPac(batchPac);
+      const { promise: settlePromise, resolve: settleResolve } = Promise.withResolvers<void>();
+      setTimeout(settleResolve, 120);
+      await settlePromise;
+      // Parallel: total probe time = slowest candidate, not the sum.
+      const results = await Promise.all(
+        candidates.map((cand, i) => probeFetch(cand, String(i), target.host))
+      );
+      for (let i = 0; i < candidates.length; i++) {
+        const cand = candidates[i]!;
+        probeResults.push({ id: cand.id, name: cand.name, latency: results[i]! });
       }
     } finally {
-      clearTempProxyCredentials();
-      ProxyManager.invalidateCache();
+      // A preempting user test / rule-list fallback owns the temp cred slot now.
       if (!userTestRunning && !ruleListFallbackRunning) {
-        try {
-          const fresh = await getSettings();
-          const curr = fresh.profiles[fresh.activeProfileId];
-          if (curr) await ProxyManager.applyProfile(curr, fresh.profiles);
-        } catch (err) {
-          console.warn('[NeoOmega] Restore proxy after speed probe failed:', err);
+        clearTempProxyCredentials();
+        // Restore with one retry — a failed restore would strand the probe PAC.
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          try {
+            await ProxyManager.applyCurrentActive();
+            break;
+          } catch (err) {
+            console.warn(`[NeoOmega] Restore proxy after speed probe failed (attempt ${attempt}):`, err);
+          }
         }
       }
       speedProbeAbort = null;
       speedProbeRunning = false;
     }
+    if (abortController.signal.aborted) return;
     const valid = probeResults.filter((r): r is { id: string; name: string; latency: number } => typeof r.latency === 'number' && r.latency > 0);
     console.log('[NeoOmega] Speed probe for', target.host, 'results:', probeResults);
     if (valid.length === 0) return;
     valid.sort((a, b) => a.latency - b.latency);
     const best = valid[0];
     if (!best) return;
-    console.log('[NeoOmega] Best candidate:', best.name, `${best.latency}ms`, 'current:', currentProfileId);
+    console.log('[NeoOmega] Best candidate:', best.name, `${best.latency}ms`, 'current:', currentKey);
 
-    if (best.id !== currentProfileId) {
-      const currentResult = valid.find((r) => r.id === currentProfileId);
-      const currentLatency = currentResult ? currentResult.latency : target.duration;
+    if (best.id !== currentKey) {
+      const currentResult = valid.find((r) => r.id === currentKey);
+      // Current route unmeasured → no honest baseline; never fall back to page-load duration.
+      if (!currentResult) return;
+      const currentLatency = currentResult.latency;
       if (currentLatency - best.latency >= 250 && currentLatency >= best.latency * 1.25) {
+        if (analyzedHostsCache.size > 2000) analyzedHostsCache.clear();
         analyzedHostsCache.set(target.host, Date.now() + 600000);
         const curProfileObj = settings.profiles[currentProfileId];
-        const curName = curProfileObj ? curProfileObj.name : (currentProfileId === 'direct' ? '直连' : currentProfileId);
+        const curName = curProfileObj ? curProfileObj.name : (currentKey === 'direct' ? '直连' : currentKey);
         console.log('[NeoOmega] Sending speed recommendation to tab', tabId, target.host, '->', best.name);
         chrome.tabs.sendMessage(
           tabId,
@@ -578,7 +668,8 @@ export default defineBackground(() => {
 
   const onCompletedListener = (details: chrome.webRequest.OnCompletedDetails) => {
     resolvePending(details.requestId);
-    if (details.tabId <= 0) return;
+    // Request log only feeds the side panel; skip per-request alloc when closed
+    if (!requestLogOn || details.tabId <= 0) return;
     try {
       const urlObj = new URL(details.url);
       const reqs = tabRequests.get(details.tabId) || [];
@@ -664,17 +755,22 @@ export default defineBackground(() => {
   };
 
   const onBeforeRequestListener = (details: chrome.webRequest.OnBeforeRequestDetails): undefined => {
-    if (details.tabId <= 0 || !errorTrackingOn) return;
+    if (details.tabId <= 0 || (!errorTrackingOn && !requestLogOn)) return;
     try {
       const urlObj = new URL(details.url);
       const host = urlObj.hostname;
       if (!host) return;
       clearPending(details.requestId);
       const timer = setTimeout(() => {
-        const p = pendingRequests.get(details.requestId);
-        if (p) p.reported = true;
         console.warn('[NeoOmega] Hang detected:', host, details.url);
         addTabError(details.tabId, details.url, host, 'net::ERR_CONNECTION_HANG');
+        // Keep the entry so resolvePending can retract a false-positive hang
+        // when late headers arrive; evict after the retraction window.
+        const p = pendingRequests.get(details.requestId);
+        if (p) {
+          p.reported = true;
+          p.timer = setTimeout(() => pendingRequests.delete(details.requestId), 60000);
+        }
       }, HANG_TIMEOUT_MS);
       pendingRequests.set(details.requestId, { tabId: details.tabId, host, url: details.url, timer, reported: false });
     } catch {
@@ -694,6 +790,7 @@ export default defineBackground(() => {
     try {
       const urlObj = new URL(details.url);
       addTabError(details.tabId, details.url, urlObj.hostname, details.error);
+      if (!requestLogOn) return;
       const reqs = tabRequests.get(details.tabId) || [];
       reqs.unshift({
         id: details.requestId,
@@ -729,6 +826,7 @@ export default defineBackground(() => {
     }
   };
   const broadcastTab = (tabId: number) => {
+    if (portTab.size === 0) return; // no open panel: skip timer churn per request
     clearTimeout(broadcastTimers.get(tabId));
     broadcastTimers.set(
       tabId,
@@ -743,37 +841,37 @@ export default defineBackground(() => {
 
   const syncWebRequestListeners = () => {
     if (!chrome.webRequest?.onCompleted) return;
-    const hasCompleted = chrome.webRequest.onCompleted.hasListener(onCompletedListener);
-    if (requestLogOn && !hasCompleted) {
-      chrome.webRequest.onCompleted.addListener(onCompletedListener, { urls: ['<all_urls>'] });
-    } else if (!requestLogOn && hasCompleted) {
-      chrome.webRequest.onCompleted.removeListener(onCompletedListener);
-    }
     const wantError = requestLogOn || errorTrackingOn;
-    const hasError = chrome.webRequest.onErrorOccurred.hasListener(onErrorListener);
-    if (wantError && !hasError) {
-      chrome.webRequest.onErrorOccurred.addListener(onErrorListener, { urls: ['<all_urls>'] });
-    } else if (!wantError && hasError) {
-      chrome.webRequest.onErrorOccurred.removeListener(onErrorListener);
-    }
+    // Hang detection runs a per-request timer to drive failure toasts / panel
+    // data — when neither error tracking nor the panel is on, onBeforeRequest/
+    // onHeadersReceived are pure per-request overhead (URL parse + timer +
+    // Map insert for every request). Gate on wantError only: popup's
+    // GET_TAB_ERRORS needs hang entries even with the toast disabled.
+    const wantHang = wantError;
+    const wantCompleted = requestLogOn || wantHang; // panel feed + pending cleanup
 
-    // Hang detection requires onBeforeRequest + onHeadersReceived alongside errors
-    const hasBefore = chrome.webRequest.onBeforeRequest.hasListener(onBeforeRequestListener);
-    const hasHeaders = chrome.webRequest.onHeadersReceived.hasListener(onHeadersReceivedListener);
-    const hasCompletedForHang = chrome.webRequest.onCompleted.hasListener(onCompletedListener);
-    if (wantError && !hasBefore) {
-      chrome.webRequest.onBeforeRequest.addListener(onBeforeRequestListener, { urls: ['<all_urls>'] });
-      chrome.webRequest.onHeadersReceived.addListener(onHeadersReceivedListener, { urls: ['<all_urls>'] });
-    } else if (!wantError && hasBefore) {
-      chrome.webRequest.onBeforeRequest.removeListener(onBeforeRequestListener);
-      chrome.webRequest.onHeadersReceived.removeListener(onHeadersReceivedListener);
+    if (!wantHang && pendingRequests.size > 0) {
+      for (const p of pendingRequests.values()) clearTimeout(p.timer);
+      pendingRequests.clear();
     }
-    // onCompleted also needed to clear pending when side panel closed
-    if (wantError && !requestLogOn && !hasCompletedForHang) {
-      chrome.webRequest.onCompleted.addListener(onCompletedListener, { urls: ['<all_urls>'] });
-    } else if (!wantError && !requestLogOn && hasCompletedForHang) {
-      chrome.webRequest.onCompleted.removeListener(onCompletedListener);
-    }
+    const toggle = <L>(
+      event: {
+        addListener: (cb: L, filter: chrome.webRequest.RequestFilter) => void;
+        removeListener: (cb: L) => void;
+        hasListener: (cb: L) => boolean;
+      },
+      listener: L,
+      want: boolean
+    ) => {
+      const has = event.hasListener(listener);
+      if (want && !has) event.addListener(listener, { urls: ['<all_urls>'] });
+      else if (!want && has) event.removeListener(listener);
+    };
+
+    toggle(chrome.webRequest.onCompleted, onCompletedListener, wantCompleted);
+    toggle(chrome.webRequest.onErrorOccurred, onErrorListener, wantError);
+    toggle(chrome.webRequest.onBeforeRequest, onBeforeRequestListener, wantHang);
+    toggle(chrome.webRequest.onHeadersReceived, onHeadersReceivedListener, wantHang);
   };
 
   chrome.runtime.onConnect.addListener((port) => {
@@ -877,13 +975,21 @@ export default defineBackground(() => {
     if (changeInfo.url) {
       tabErrors.delete(tabId);
       purgePendingForTab(tabId);
+      // SPA navigations keep the content script alive — tell it to drop stale state.
+      chrome.tabs.sendMessage(tabId, { type: 'URL_CHANGED' }, () => void chrome.runtime.lastError);
     }
   });
   // Handle messages from Popup and Options
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || typeof message !== 'object') return false;
-    if (message.type === 'ANALYZE_SLOW_HOSTS') {
-      void analyzeSlowHosts(message.hosts, _sender.tab?.id);
+    if (message.type === 'ANALYZE_SLOW_HOSTS' || message.type === 'TAB_SLOW_HOST') {
+      const proto = message.protocol === 'http:' || message.protocol === 'http' ? 'http:' : (message.protocol === 'https:' || message.protocol === 'https' ? 'https:' : undefined);
+      const hosts = Array.isArray(message.hosts)
+        ? message.hosts
+        : message.host
+          ? [{ host: message.host, duration: message.duration ?? 0, protocol: message.protocol }]
+          : [];
+      void analyzeSlowHosts(hosts, _sender.tab?.id, proto);
       return false;
     }
     if (message.type === 'GET_TAB_ERRORS') {
@@ -1008,16 +1114,18 @@ export default defineBackground(() => {
     if (message.type === 'ADD_HOST_RULE') {
       (async () => {
         try {
-          const { pattern, profileId, tabId } = message;
-          const rawPattern = (pattern || '').trim();
-          if (!rawPattern) {
+          const { profileId, tabId } = message;
+          // Batch: `patterns` (toast "add all") or legacy single `pattern`.
+          // One settings save + one PAC recompile for the whole batch —
+          // per-pattern apply would recompile the full PAC N times.
+          const rawList: string[] = Array.isArray(message.patterns)
+            ? message.patterns.filter((p: unknown) => typeof p === 'string')
+            : [message.pattern];
+          const patterns = [...new Set(rawList.map((p: string) => (p || '').trim()).filter(Boolean))];
+          if (patterns.length === 0) {
             sendResponse({ success: false, error: '域名不能为空 (Host cannot be empty)' });
             return;
           }
-          const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(rawPattern) || rawPattern.includes(':');
-          const rulePattern = isIp || rawPattern.startsWith('*') ? rawPattern : `*.${rawPattern}`;
-          const cleanHost = rawPattern.replace(/^\*\./, '');
-          const isMatch = (p: string) => p === rulePattern || p === rawPattern || p.replace(/^\*\./, '') === cleanHost;
 
           const freshSettings = await getSettings();
           const active = freshSettings.profiles[freshSettings.activeProfileId];
@@ -1048,35 +1156,47 @@ export default defineBackground(() => {
           }
 
           const switchProfile = active as SwitchProfile;
-          const existingRule = switchProfile.rules.find(
-            (r) => r.condition.conditionType === 'HostWildcardCondition' && isMatch(r.condition.pattern)
-          );
+          const addedHosts: string[] = [];
+          for (const rawPattern of patterns) {
+            const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(rawPattern) || rawPattern.includes(':');
+            const rulePattern = isIp || rawPattern.startsWith('*') ? rawPattern : `*.${rawPattern}`;
+            const cleanHost = rawPattern.replace(/^\*\./, '');
+            const isMatch = (p: string) => p === rulePattern || p === rawPattern || p.replace(/^\*\./, '') === cleanHost;
 
-          // Deduplicate: purge previous duplicate rules for this host and update to top
-          switchProfile.rules = switchProfile.rules.filter(
-            (r) => !(r.condition.conditionType === 'HostWildcardCondition' && isMatch(r.condition.pattern))
-          );
-          switchProfile.rules.unshift({
-            id: existingRule?.id || `r_user_${Date.now()}`,
-            enabled: true,
-            condition: {
-              conditionType: 'HostWildcardCondition',
-              pattern: rulePattern,
-            },
-            profileId: targetProfileId,
-            note: existingRule?.note || 'Added from popup',
-          });
+            const existingRule = switchProfile.rules.find(
+              (r) => r.condition.conditionType === 'HostWildcardCondition' && isMatch(r.condition.pattern)
+            );
+
+            // Deduplicate: purge previous duplicate rules for this host and update to top
+            switchProfile.rules = switchProfile.rules.filter(
+              (r) => !(r.condition.conditionType === 'HostWildcardCondition' && isMatch(r.condition.pattern))
+            );
+            switchProfile.rules.unshift({
+              id: existingRule?.id || `r_user_${Date.now()}_${addedHosts.length}`,
+              enabled: true,
+              condition: {
+                conditionType: 'HostWildcardCondition',
+                pattern: rulePattern,
+              },
+              profileId: targetProfileId,
+              note: existingRule?.note || 'Added from popup',
+            });
+            addedHosts.push(rawPattern);
+          }
           await saveSettings(freshSettings);
           await ProxyManager.applyProfile(switchProfile, freshSettings.profiles);
           const targetTabId = typeof tabId === 'number' && tabId > 0 ? tabId : _sender.tab?.id;
           if (typeof targetTabId === 'number' && targetTabId > 0 && tabErrors.has(targetTabId)) {
+            const added = new Set(addedHosts);
             const cur = tabErrors.get(targetTabId)!;
-            const next = cur.filter((e) => e.host !== cleanHost && e.host !== rawPattern);
-            if (next.length > 0) tabErrors.set(targetTabId, next);
-            else tabErrors.delete(targetTabId);
-            broadcastTab(targetTabId);
+            const next = cur.filter((e) => !added.has(e.host) && !added.has(`*.${e.host}`));
+            if (next.length !== cur.length) {
+              if (next.length > 0) tabErrors.set(targetTabId, next);
+              else tabErrors.delete(targetTabId);
+              broadcastTab(targetTabId);
+            }
           }
-          sendResponse({ success: true });
+          sendResponse({ success: true, count: addedHosts.length, hosts: addedHosts });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           sendResponse({ success: false, error: msg });
@@ -1090,6 +1210,34 @@ export default defineBackground(() => {
         try {
           const count = await updateSingleRuleList(message.profileId, message.ruleList);
           sendResponse({ success: true, count });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          sendResponse({ success: false, error: msg });
+        }
+      })();
+      return true;
+    }
+
+    if (message.type === 'TEST_PROXIES') {
+      const raw = Array.isArray(message.proxies) ? message.proxies : [];
+      // Do NOT filter here — results must stay index-aligned with the caller's
+      // array; testProxyServers maps invalid entries to failure results.
+      testProxyServers(raw as ProxyServer[], message.testUrl)
+        .then((results) => {
+          sendResponse({ success: true, results });
+        })
+        .catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          sendResponse({ success: false, error: msg });
+        });
+      return true;
+    }
+
+    if (message.type === 'REAPPLY_PROXY') {
+      (async () => {
+        try {
+          await ProxyManager.applyCurrentActive();
+          sendResponse({ success: true });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           sendResponse({ success: false, error: msg });

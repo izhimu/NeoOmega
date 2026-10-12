@@ -4,6 +4,7 @@
 
 import type { RuleCondition } from '../types';
 import type { SwitchProfile } from '../types';
+import { parseRuleListCache } from '../parsers/autoproxy';
 
 /**
  * Convert a wildcard pattern (*, ?) to a regular expression string
@@ -73,7 +74,7 @@ function ipv4ToNumber(ip: string): number | null {
  */
 export function matchCondition(condition: RuleCondition, url: string, host: string): boolean {
   const { conditionType, pattern } = condition;
-  if (!pattern && conditionType !== 'TrueCondition' && conditionType !== 'FalseCondition') {
+  if ((!pattern || !pattern.trim()) && conditionType !== 'TrueCondition' && conditionType !== 'FalseCondition') {
     return false;
   }
 
@@ -124,7 +125,7 @@ export function matchCondition(condition: RuleCondition, url: string, host: stri
       const p = pattern.toLowerCase();
       // 1. <local>
       if (p === '<local>') {
-        return !h.includes('.') || h === 'localhost' || h === '127.0.0.1' || h === '::1';
+        return (!h.includes('.') && !h.includes(':')) || h === 'localhost' || h === '127.0.0.1' || h === '::1';
       }
       // 2. CIDR
       if (p.includes('/')) {
@@ -163,11 +164,43 @@ export function matchSwitchProfile(
 }
 
 /**
+ * Full route resolution: manual rules first, then ruleList cache (GFWList etc).
+ * matchSwitchProfile alone ignores ruleList — PAC routing does not.
+ */
+export function matchSwitchProfileFull(
+  profile: SwitchProfile,
+  url: string,
+  host: string
+): string {
+  // Manual rules first — a manual hit wins even when it targets the default
+  // profile (PAC compiler semantics: rules evaluate before the rule list).
+  for (const rule of profile.rules) {
+    if (!rule.enabled) continue;
+    if (matchCondition(rule.condition, url, host)) {
+      return rule.profileId;
+    }
+  }
+  const rl = profile.ruleList;
+  if (rl?.enabled && Array.isArray(rl.rulesCache)) {
+    const defaultId = rl.defaultProfileId || profile.defaultProfileId;
+    const parsed = parseRuleListCache(rl.rulesCache, rl.matchProfileId, defaultId);
+    for (const rule of parsed) {
+      if (matchCondition(rule.condition, url, host)) {
+        return rule.profileId;
+      }
+    }
+  }
+  return profile.defaultProfileId;
+}
+
+/**
  * Convert condition to JavaScript expression string for embedding into PAC script
  */
 export function conditionToPacCode(condition: RuleCondition): string {
   const { conditionType, pattern } = condition;
-
+  if ((!pattern || !pattern.trim()) && conditionType !== 'TrueCondition' && conditionType !== 'FalseCondition') {
+    return 'false';
+  }
   switch (conditionType) {
     case 'TrueCondition':
       return 'true';
@@ -182,7 +215,7 @@ export function conditionToPacCode(condition: RuleCondition): string {
 
     case 'HostRegexCondition': {
       try {
-        const escaped = pattern.replace(/(?<!\\)\//g, '\\/');
+        const escaped = pattern.replace(/(\\*)\//g, (m, bs) => (bs.length % 2 ? m : bs + '\\/'));
         if (/[\r\n\u2028\u2029]/.test(escaped)) return 'false'; // literal would break single-line PAC
         new RegExp(escaped, 'i');
         return `/${escaped}/i.test(host)`;
@@ -198,7 +231,7 @@ export function conditionToPacCode(condition: RuleCondition): string {
 
     case 'UrlRegexCondition': {
       try {
-        const escaped = pattern.replace(/(?<!\\)\//g, '\\/');
+        const escaped = pattern.replace(/(\\*)\//g, (m, bs) => (bs.length % 2 ? m : bs + '\\/'));
         if (/[\r\n\u2028\u2029]/.test(escaped)) return 'false';
         new RegExp(escaped, 'i');
         return `/${escaped}/i.test(url)`;
@@ -220,7 +253,7 @@ export function conditionToPacCode(condition: RuleCondition): string {
     case 'BypassCondition': {
       const p = pattern.toLowerCase();
       if (p === '<local>') {
-        return `(isPlainHostName(host) || host === "127.0.0.1" || host === "::1" || host.toLowerCase() === "localhost")`;
+        return `((host.indexOf(':') === -1 && isPlainHostName(host)) || host === "127.0.0.1" || host === "::1" || host.toLowerCase() === "localhost")`;
       }
       if (p.includes('/')) {
         const [ip, bitsStr] = pattern.split('/');

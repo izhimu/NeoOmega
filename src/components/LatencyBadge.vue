@@ -90,7 +90,7 @@ const dotClass = computed(() => {
       )"
       :title="badgeTitle"
     >
-      {{ isSuccess ? (hasSpeed ? `${data.speedMbps} Mbps` : `${data.latency}ms`) : 'ERR' }}
+      {{ isSuccess ? (hasSpeed ? `${data.speedMbps} Mbps` : `${data.latency}ms`) : failedText }}
     </span>
     <span
       v-else

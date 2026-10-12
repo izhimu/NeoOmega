@@ -4,7 +4,7 @@
     "description": "扩展名称"
   },
   "extDesc": {
-    "message": "轻量、高性能的 Chrome 代理切换与自动化分流管理扩展 (Manifest V3)",
+    "message": "轻量、高性能的浏览器代理切换与自动化分流管理扩展 (Manifest V3)",
     "description": "扩展描述"
   }
 }

@@ -5,6 +5,14 @@
 
 import type { ConditionType, RuleCondition, SwitchRule } from '../types';
 
+// ponytail: ReDoS heuristic for attacker-controlled rule lists — rejects >300 chars,
+// quantified groups with inner quantifiers ((a+))+, and quantified alternation
+// ((a|aa)+). Upgrade to a safe-regex engine if legit rules trip.
+export const isSafeRuleRegex = (pattern: string): boolean =>
+  pattern.length <= 300 &&
+  !/\(([^)]*[+*][^)]*)\)[+*{]/.test(pattern) &&
+  !/\([^()]*\|[^()]*\)[+*{]/.test(pattern);
+
 /**
  * Decode Base64 or plain text AutoProxy rule list
  */
@@ -22,14 +30,58 @@ export function decodeRuleListText(content: string): string {
 
   try {
     const cleaned = trimmed.replace(/\s+/g, '');
+    let decoded: string;
     if (typeof atob === 'function') {
-      return new TextDecoder().decode(Uint8Array.from(atob(cleaned), (c) => c.charCodeAt(0)));
+      decoded = new TextDecoder().decode(Uint8Array.from(atob(cleaned), (c) => c.charCodeAt(0)));
+    } else {
+      // Node.js fallback for tests
+      decoded = Buffer.from(cleaned, 'base64').toString('utf-8');
     }
-    // Node.js fallback for tests
-    return Buffer.from(cleaned, 'base64').toString('utf-8');
+    const looksLikeRuleList =
+      decoded.includes('[AutoProxy') ||
+      decoded.includes('\n') ||
+      /(?:^|\n)(?:!|\|\||@@|\|)/.test(decoded);
+    return looksLikeRuleList ? decoded : content;
   } catch {
     return content;
   }
+}
+
+// Memoize full-cache parses: popup route preview and matchSwitchProfileFull
+// would otherwise re-parse 4000+ lines per invocation. Keyed by array identity
+// (settings reads produce a fresh array on every rule-list update).
+interface CacheEntry {
+  key: string;
+  rules: SwitchRule[];
+}
+
+const parsedCache = new WeakMap<string[], CacheEntry>();
+
+export function parseRuleListCache(
+  lines: string[],
+  matchProfileId: string,
+  defaultProfileId: string = 'direct'
+): SwitchRule[] {
+  const key = `${matchProfileId}\x03${defaultProfileId}`;
+  const hit = parsedCache.get(lines);
+  if (hit && hit.key === key) return hit.rules;
+
+  const whitelistRules: SwitchRule[] = [];
+  const proxyRules: SwitchRule[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const rule = parseAutoProxyLine(line, i, matchProfileId, defaultProfileId);
+    if (rule) {
+      if (rule.profileId === defaultProfileId) {
+        whitelistRules.push(rule);
+      } else {
+        proxyRules.push(rule);
+      }
+    }
+  }
+  const rules = [...whitelistRules, ...proxyRules];
+  parsedCache.set(lines, { key, rules });
+  return rules;
 }
 
 /**
@@ -60,9 +112,48 @@ export function parseAutoProxyLine(
 
   if (raw.startsWith('||')) {
     // Domain match: ||example.com matches example.com and *.example.com
-    const domain = raw.slice(2).replace(/^\*+\.?/, '').replace(/\^.*$/, '');
-    conditionType = 'HostWildcardCondition';
-    pattern = `*.${domain}`;
+    let domain = raw.slice(2).replace(/^\*+\.?/, '');
+    if (domain.includes('/')) {
+      // Host+path rule: AutoProxy '||' covers apex AND subdomains — UrlWildcard
+      // '*://*.d/p' misses the apex, so emit a regex. Slashes stay unescaped
+      // here; conditionToPacCode parity-escapes for PAC literals.
+      const slash = domain.indexOf('/');
+      let hostPart = domain.slice(0, slash);
+      let pathPart = domain.slice(slash);
+      // Trailing '|' anchors the end of the URL (adblock semantics)
+      const endAnchor = pathPart.endsWith('|');
+      if (endAnchor) pathPart = pathPart.slice(0, -1);
+      if (/[^\x00-\x7F]/.test(hostPart) && !hostPart.includes('*')) {
+        try {
+          // Keep an explicit port — URL.hostname would drop it
+          const port = hostPart.match(/:\d+$/)?.[0] ?? '';
+          hostPart = new URL('http://' + hostPart).hostname + port;
+        } catch {
+          // fallback: keep original
+        }
+      }
+      // ponytail: intra-label IDN+wildcard (||中文*.com/) can't match — URL host
+      // is punycode at match time; skipped conversion keeps the pattern sane.
+      // Host wildcard stays inside the host segment: [^/?#]*, NOT .*
+      const escHost = hostPart.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/?#]*');
+      const escPath = pathPart
+        .replace(/[.+?^${}()|[\]\\]/g, '\\$&') // escape specials except *
+        .replace(/\*/g, '.*')
+        .replace(/\\\^/g, '(?:[^\\w\\-.%]|$)'); // adblock '^' separator or end-of-address
+      conditionType = 'UrlRegexCondition';
+      pattern = `^https?://([^/?]*\\.)?${escHost}(?::\\d+)?${escPath}${endAnchor ? '$' : ''}`;
+    } else {
+      domain = domain.replace(/\^.*$/, '');
+      if (/[^\x00-\x7F]/.test(domain)) {
+        try {
+          domain = new URL('http://' + domain).hostname;
+        } catch {
+          // fallback: keep original
+        }
+      }
+      conditionType = 'HostWildcardCondition';
+      pattern = `*.${domain}`;
+    }
   } else if (raw.startsWith('/') && raw.endsWith('/') && raw.length > 2) {
     // Regex rule: /pattern/
     conditionType = 'UrlRegexCondition';
@@ -72,7 +163,7 @@ export function parseAutoProxyLine(
     const hasTrailing = rem.endsWith('|');
     if (hasTrailing) rem = rem.slice(0, -1);
     // Heuristic: treat rules with regex metachars (excluding * wildcards) as anchored regex
-    if (/[\^$\\()[\]?+]/.test(rem.replace(/\*/g, ''))) {
+    if (/[\^$\\()[\]+]/.test(rem.replace(/\*/g, ''))) {
       conditionType = 'UrlRegexCondition';
       pattern = (rem.startsWith('^') ? rem : `^${rem}`) + (hasTrailing && !rem.endsWith('$') ? '$' : '');
     } else {
@@ -105,11 +196,8 @@ export function parseAutoProxyLine(
     conditionType = 'KeywordCondition';
     pattern = raw;
   }
-  if (conditionType === 'UrlRegexCondition') {
-    // ponytail: ReDoS heuristic rejects >300 chars or nested quantifiers; upgrade to safe-regex engine if legit rules trip
-    if (pattern.length > 300 || /\(([^)]*[+*][^)]*)\)[+*{]/.test(pattern)) {
-      return null;
-    }
+  if (conditionType === 'UrlRegexCondition' && !isSafeRuleRegex(pattern)) {
+    return null;
   }
 
   const condition: RuleCondition = {

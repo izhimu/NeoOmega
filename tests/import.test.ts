@@ -49,4 +49,28 @@ describe('parseSwitchyOmegaBackup', () => {
       throw new Error('auto profile missing');
     }
   });
+
+  it('preserves proxyForHttps scheme and falls back fallbackProxy from proxyForHttp/proxyForHttps', () => {
+    const bak = JSON.stringify({
+      schemaVersion: 2,
+      '+SocksHttps': {
+        name: 'SocksHttps',
+        profileType: 'FixedProfile',
+        proxyForHttps: { scheme: 'socks5', host: '127.0.0.1', port: 1080 },
+      },
+    });
+    const parsed = parseSwitchyOmegaBackup(bak);
+    const fixed = parsed.profiles['sockshttps'];
+    expect(fixed?.profileType).toBe('FixedProfile');
+    if (fixed?.profileType === 'FixedProfile') {
+      expect(fixed.proxyForHttps).toEqual({ scheme: 'socks5', host: '127.0.0.1', port: 1080 });
+      expect(fixed.fallbackProxy).toEqual({ scheme: 'socks5', host: '127.0.0.1', port: 1080 });
+    }
+  });
+
+  it('rejects null, non-object, and random JSON without profiles', () => {
+    expect(() => parseSwitchyOmegaBackup('null')).toThrow('Invalid backup file');
+    expect(() => parseSwitchyOmegaBackup('[]')).toThrow('Invalid backup file');
+    expect(() => parseSwitchyOmegaBackup('{}')).toThrow('Not a SwitchyOmega backup');
+  });
 });

@@ -5,12 +5,13 @@ import {
   Trash2,
   ChevronUp,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Globe,
   Palette,
   Download,
   Upload,
   Plus,
-  ShieldAlert,
   Save,
   CheckCircle2,
   Sparkles,
@@ -42,7 +43,7 @@ import { parseSwitchyOmegaBackup } from '../../src/core/parsers/switchyomega';
 import { ProxyManager } from '../../src/core/proxy/proxy-manager';
 import { DEFAULT_SETTINGS, getSettings, normalizeBypassList, saveSettings } from '../../src/core/storage/storage';
 import { addBypass as addBypassItem, removeBypass as removeBypassItem } from '../../src/core/bypass';
-import type { AppSettings, ConditionType, FixedProfile, Profile, SwitchProfile } from '../../src/core/types';
+import type { AppSettings, FixedProfile, Profile, SwitchProfile } from '../../src/core/types';
 import { useI18n, resolveLocale } from '../../src/core/i18n';
 import { applyTheme, initThemeListener } from '../../src/core/theme';
 import { classifyIp, fetchDnsServers, fetchExitInfo, fetchExitIps, gatherIceCandidatesFromWebPage } from '../../src/core/leak/leak-test';
@@ -148,11 +149,25 @@ const switchProfile = computed<SwitchProfile | null>(() => {
   return p?.profileType === 'SwitchProfile' ? (p as SwitchProfile) : null;
 });
 
+// Custom rules pagination. Rule order = priority, so indices stay absolute.
+const RULES_PAGE_SIZE = 20;
+const rulesPage = ref(1);
+const rulesPageCount = computed(() => Math.max(1, Math.ceil((switchProfile.value?.rules.length ?? 0) / RULES_PAGE_SIZE)));
+const pagedRules = computed(() => {
+  const rules = switchProfile.value?.rules ?? [];
+  const start = (rulesPage.value - 1) * RULES_PAGE_SIZE;
+  return rules.slice(start, start + RULES_PAGE_SIZE).map((rule, i) => ({ rule, idx: start + i }));
+});
+watch(() => switchProfile.value?.id, () => { rulesPage.value = 1; });
+watch(rulesPageCount, (n) => { if (rulesPage.value > n) rulesPage.value = n; });
+
 const loadSettings = async () => {
+  unmutedHosts.clear(); // unmute set is session-scoped; fresh state resets it
   settings.value = await getSettings();
   savedSnapshot = JSON.stringify(settings.value);
   applyTheme(settings.value.theme);
   setLocale(resolveLocale(settings.value.language));
+  document.title = `${t('options.brand')} - ${t('options.brandSub')}`;
   if (settings.value?.profiles) {
     for (const profile of Object.values(settings.value.profiles)) {
       if (profile.profileType === 'FixedProfile') {
@@ -192,6 +207,7 @@ const loadSettings = async () => {
 let applyingOwnChange = false;
 let savedSnapshot = '';
 let saveRuleListIntervalTimer: ReturnType<typeof setTimeout> | null = null;
+const unmutedHosts = new Set<string>();
 
 const handleStorageChange = (changes: { [key: string]: chrome.storage.StorageChange }, areaName: string) => {
   if (areaName === 'local' && changes['neo_omega_settings']) {
@@ -201,11 +217,12 @@ const handleStorageChange = (changes: { [key: string]: chrome.storage.StorageCha
   }
 };
 
-const saveCurrentSettings = async (successToast?: string | false): Promise<boolean> => {
+const saveCurrentSettings = async (successToast?: unknown, skipFreshMerge = false): Promise<boolean> => {
+  const toastMsg = typeof successToast === 'string' ? successToast : undefined;
   applyingOwnChange = true;
   try {
     const fresh = await getSettings();
-    if (fresh?.profiles && settings.value?.profiles) {
+    if (fresh?.profiles && settings.value?.profiles && !skipFreshMerge) {
       for (const [id, prof] of Object.entries(settings.value.profiles)) {
         const freshProf = fresh.profiles[id];
         if (
@@ -214,19 +231,35 @@ const saveCurrentSettings = async (successToast?: string | false): Promise<boole
           prof.profileType === 'SwitchProfile' &&
           freshProf.profileType === 'SwitchProfile' &&
           prof.ruleList &&
-          freshProf.ruleList
+          freshProf.ruleList &&
+          // URL changed → old cache is for a different list, never merge it
+          prof.ruleList.url === freshProf.ruleList.url
         ) {
-          prof.ruleList.rulesCache = freshProf.ruleList.rulesCache;
-          prof.ruleList.lastUpdate = freshProf.ruleList.lastUpdate;
+          // Keep the newer cache: options may hold a stale copy while the
+          // background refreshed the rule list (UPDATE_RULE_LIST).
+          if ((prof.ruleList.lastUpdate || 0) < (freshProf.ruleList.lastUpdate || 0)) {
+            prof.ruleList.rulesCache = freshProf.ruleList.rulesCache;
+            prof.ruleList.lastUpdate = freshProf.ruleList.lastUpdate;
+          }
         }
       }
+    }
+    if (fresh?.mutedFailureHosts && !skipFreshMerge) {
+      // unmutedHosts is session-scoped (cleared in loadSettings): filtering on
+      // every save is race-free even with concurrent saves in flight.
+      settings.value.mutedFailureHosts = fresh.mutedFailureHosts.filter((h) => !unmutedHosts.has(h));
     }
     await saveSettings(settings.value);
     savedSnapshot = JSON.stringify(settings.value);
     applyTheme(settings.value.theme);
-    await ProxyManager.applyCurrentActive();
+    try {
+      const res = await chrome.runtime.sendMessage({ type: 'REAPPLY_PROXY' });
+      if (!res?.success) throw new Error(res?.error || 'REAPPLY_PROXY failed');
+    } catch {
+      await ProxyManager.applyCurrentActive();
+    }
     if (successToast !== false) {
-      toast.success(successToast || t('options.profileSaved'));
+      toast.success(toastMsg || t('options.profileSaved'));
     }
     return true;
   } catch (err) {
@@ -241,6 +274,7 @@ const saveCurrentSettings = async (successToast?: string | false): Promise<boole
 };
 
 const unmuteFailureHost = async (host: string) => {
+  unmutedHosts.add(host);
   settings.value.mutedFailureHosts = (settings.value.mutedFailureHosts ?? []).filter((h) => h !== host);
   await saveCurrentSettings(false);
 };
@@ -269,7 +303,7 @@ const toggleLanguage = () => {
 const leakRunning = ref(false);
 const leakRan = ref(false);
 const exitResults = ref<EchoResult[]>([]);
-const iceCandidates = ref<IceCandidateInfo[]>([]);
+const iceCandidates = ref<IceCandidateInfo[] | null>([]);
 const dnsServers = ref<DnsServerInfo[]>([]);
 const dnsError = ref<string>('');
 const exitInfo = ref<ExitInfo | undefined>(undefined);
@@ -299,9 +333,9 @@ const runLeakTest = async () => {
 };
 
 const exitIps = computed(() => [...new Set(exitResults.value.map((r) => r.ip).filter((ip): ip is string => !!ip))]);
-const exitConsistent = computed(() => exitIps.value.length <= 1);
+const exitConsistent = computed(() => exitIps.value.length === 1);
 const webRtcLeaked = computed(() =>
-  iceCandidates.value.some((c) => classifyIp(c.ip) === 'public' && !exitIps.value.includes(c.ip))
+  (iceCandidates.value ?? []).some((c) => classifyIp(c.ip) === 'public' && !exitIps.value.includes(c.ip))
 );
 
 const dnsLeaked = computed(() =>
@@ -328,6 +362,18 @@ const confirmDeleteProfile = async () => {
   settings.value.order = currentOrder.filter((i) => i !== id);
   if (settings.value.activeProfileId === id) {
     settings.value.activeProfileId = 'system';
+  }
+  for (const prof of Object.values(settings.value.profiles)) {
+    if (prof.profileType === 'SwitchProfile') {
+      prof.rules = (prof.rules || []).filter((r) => r.profileId !== id);
+      if (prof.defaultProfileId === id) prof.defaultProfileId = 'direct';
+      if (prof.ruleList) {
+        if (prof.ruleList.matchProfileId === id) prof.ruleList.matchProfileId = 'direct';
+        if (prof.ruleList.defaultProfileId === id) prof.ruleList.defaultProfileId = 'direct';
+      }
+    } else if (prof.profileType === 'VirtualProfile' && prof.targetProfileId === id) {
+      prof.targetProfileId = 'direct';
+    }
   }
   await saveCurrentSettings(t('options.profileDeleted'));
   activeTab.value = `profile:${settings.value.order[0] || 'direct'}`;
@@ -384,6 +430,7 @@ const addRule = (profile: SwitchProfile) => {
     condition: { conditionType: 'HostWildcardCondition', pattern: '' },
     profileId: resolveDefaultProxyId(),
   });
+  rulesPage.value = Math.ceil(profile.rules.length / RULES_PAGE_SIZE);
 };
 
 const removeRule = (profile: SwitchProfile, index: number) => {
@@ -431,11 +478,12 @@ const updateRuleListNow = async (profileId: string) => {
     { type: 'UPDATE_RULE_LIST', profileId, ruleList: profile.ruleList },
     (res) => {
       updatingRuleList.value = false;
-      if (res && res.success) {
+      const err = chrome.runtime.lastError;
+      if (!err && res && res.success) {
         toast.success(`${t('options.ruleListUpdateSuccess')} (${res.count} ${t('options.cachedRules')})`);
         loadSettings();
       } else {
-        toast.error(res?.error || t('options.ruleListUpdateFailed'));
+        toast.error(res?.error || err?.message || t('options.ruleListUpdateFailed'));
       }
     }
   );
@@ -500,12 +548,12 @@ const isTestingSpeed = ref(false);
 const isTestingBandwidth = ref(false);
 const speedTestMode = ref<'latency' | 'bandwidth'>('latency');
 const speedTestResults = ref<Record<string, SpeedTestResult>>({});
-const speedTestTarget = ref('http://cp.cloudflare.com/generate_204');
+const speedTestTarget = ref('https://www.google.com/generate_204');
 const bandwidthTarget = ref('https://speed.cloudflare.com/__down?bytes=5000000');
 
 const speedTestTargetOptions = computed(() => [
-  { value: 'http://cp.cloudflare.com/generate_204', label: 'Cloudflare (HTTP 204)' },
   { value: 'https://www.google.com/generate_204', label: 'Google (HTTPS 204)' },
+  { value: 'http://cp.cloudflare.com/generate_204', label: 'Cloudflare (HTTP 204)' },
   { value: 'http://www.gstatic.com/generate_204', label: 'Gstatic (HTTP 204)' },
   { value: 'https://www.qualcomm.cn/generate_204', label: 'Domestic (HTTP 204)' },
 ]);
@@ -543,7 +591,7 @@ const runSpeedTest = async (mode: 'latency' | 'bandwidth' = 'latency') => {
       testUrl: targetUrl,
       mode,
     },
-    (res: any) => {
+    (res: { success: boolean; error?: string; latency?: number; status?: number; speedMBps?: number; speedMbps?: number } | undefined) => {
       isTestingSpeed.value = false;
       isTestingBandwidth.value = false;
       if (chrome.runtime.lastError) {
@@ -554,10 +602,12 @@ const runSpeedTest = async (mode: 'latency' | 'bandwidth' = 'latency') => {
       if (res) {
         speedTestResults.value[fp.id] = {
           ...res,
+          testUrl: targetUrl,
           timestamp: Date.now(),
         };
         if (typeof chrome !== 'undefined' && chrome.storage?.local) {
-          chrome.storage.local.set({ neo_omega_latency_cache: speedTestResults.value });
+          // Strip Vue reactivity before chrome.storage (structured-clone hazard)
+          chrome.storage.local.set({ neo_omega_latency_cache: JSON.parse(JSON.stringify(speedTestResults.value)) });
         }
         if (res.success) {
           if (res.speedMBps !== undefined) {
@@ -677,11 +727,12 @@ const handleFileImport = async (e: Event) => {
     try {
       const imported = parseSwitchyOmegaBackup(text);
       settings.value = imported;
-      const ok = await saveCurrentSettings(false);
+      const ok = await saveCurrentSettings(false, true);
       if (!ok) {
         await loadSettings();
         return;
       }
+      await loadSettings();
       maybePromptSponsor();
       toast.success(t('options.importSuccess'));
       activeTab.value = `profile:${imported.order[0]}`;
@@ -780,13 +831,13 @@ const profileTypeOptions = [
   },
 ] as const;
 
-onMounted(() => {
-  loadSettings();
+onMounted(async () => {
   if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
     chrome.storage.onChanged.addListener(handleStorageChange);
   }
   checkGuideSeen();
   cleanThemeListener = initThemeListener(() => settings.value?.theme);
+  await loadSettings();
   document.title = `${t('options.brand')} - ${t('options.brandSub')}`;
 });
 onUnmounted(() => {
@@ -1449,7 +1500,7 @@ onUnmounted(() => {
                     </td>
                   </tr>
                   <tr
-                    v-for="(rule, idx) in (switchProfile.rules || [])"
+                    v-for="{ rule, idx } in pagedRules"
                     :key="rule.id"
                     class="hover:bg-slate-50/80 dark:hover:bg-white/[0.02] transition-colors"
                   >
@@ -1512,6 +1563,22 @@ onUnmounted(() => {
                   </tr>
                 </TransitionGroup>
               </table>
+            </div>
+
+            <!-- Rules Pagination -->
+            <div
+              v-if="switchProfile.rules.length > RULES_PAGE_SIZE"
+              class="flex items-center justify-end gap-3 text-xs text-slate-500 dark:text-slate-400"
+            >
+              <span>{{ t('options.rulesTotal').replace('{count}', String(switchProfile.rules.length)) }} · {{ rulesPage }} / {{ rulesPageCount }}</span>
+              <div class="flex gap-1">
+                <UiButton variant="outline" size="icon" :disabled="rulesPage <= 1" :title="t('options.rulesPrevPage')" @click="rulesPage--">
+                  <ChevronLeft :size="14" />
+                </UiButton>
+                <UiButton variant="outline" size="icon" :disabled="rulesPage >= rulesPageCount" :title="t('options.rulesNextPage')" @click="rulesPage++">
+                  <ChevronRight :size="14" />
+                </UiButton>
+              </div>
             </div>
 
             <!-- Online Rule List Section -->
@@ -1630,7 +1697,7 @@ onUnmounted(() => {
             <UiSelect
               v-model="settings.theme"
               :options="themeOptions"
-              @update:model-value="saveCurrentSettings"
+              @update:model-value="saveCurrentSettings()"
             />
           </SettingCard>
 
@@ -1758,7 +1825,7 @@ onUnmounted(() => {
             <div class="p-5 sm:p-6 bg-slate-50/60 dark:bg-slate-950/60 border border-slate-200/80 dark:border-white/10 rounded-2xl sm:rounded-3xl flex flex-col gap-3 shadow-xs">
               <h3 class="text-sm font-bold text-slate-900 dark:text-white">{{ t('options.leakExitTitle') }}</h3>
               <p class="text-xs font-semibold" :class="exitConsistent ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'">
-                {{ exitConsistent ? t('options.leakExitOk') : t('options.leakExitBad') }}
+                {{ exitIps.length === 0 ? t('options.leakTestFailed') : exitConsistent ? t('options.leakExitOk') : t('options.leakExitBad') }}
               </p>
               <ul class="flex flex-col gap-1 text-xs font-mono text-slate-600 dark:text-slate-400">
                 <li v-for="r in exitResults" :key="r.name" class="flex justify-between gap-3">
@@ -1769,10 +1836,10 @@ onUnmounted(() => {
             </div>
             <div class="p-5 sm:p-6 bg-slate-50/60 dark:bg-slate-950/60 border border-slate-200/80 dark:border-white/10 rounded-2xl sm:rounded-3xl flex flex-col gap-3 shadow-xs">
               <h3 class="text-sm font-bold text-slate-900 dark:text-white">{{ t('options.leakWebRtcTitle') }}</h3>
-              <p class="text-xs font-semibold" :class="webRtcLeaked ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'">
-                {{ iceCandidates.length === 0 ? t('options.leakWebRtcNone') : webRtcLeaked ? t('options.leakWebRtcBad') : t('options.leakWebRtcOk') }}
+              <p class="text-xs font-semibold" :class="iceCandidates === null || webRtcLeaked ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'">
+                {{ iceCandidates === null ? t('options.leakTestFailed') : iceCandidates.length === 0 ? t('options.leakWebRtcNone') : webRtcLeaked ? t('options.leakWebRtcBad') : t('options.leakWebRtcOk') }}
               </p>
-              <ul v-if="iceCandidates.length" class="flex flex-col gap-1 text-xs font-mono text-slate-600 dark:text-slate-400">
+              <ul v-if="iceCandidates?.length" class="flex flex-col gap-1 text-xs font-mono text-slate-600 dark:text-slate-400">
                 <li v-for="c in iceCandidates" :key="`${c.type}:${c.ip}`" class="flex justify-between gap-3">
                   <span>{{ c.type }}</span>
                   <span :class="classifyIp(c.ip) === 'public' ? 'text-rose-500 font-bold' : ''">{{ c.ip }} ({{ classifyIp(c.ip) }})</span>

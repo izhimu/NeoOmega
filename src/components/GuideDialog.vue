@@ -118,6 +118,7 @@ onUnmounted(() => {
         class="absolute w-[340px] max-w-[calc(100vw-2rem)] p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-3xl shadow-2xl transition-all duration-200"
         :style="cardStyle"
         role="dialog"
+        aria-modal="true"
         :aria-label="t('options.guideTitle')"
       >
         <div class="flex justify-between items-start mb-3">

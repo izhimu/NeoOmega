@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { classifyIp, parseCandidate } from '../src/core/leak/leak-test';
+import { describe, expect, it, vi } from 'vitest';
+import { classifyIp, gatherIceCandidatesFromWebPage, parseCandidate } from '../src/core/leak/leak-test';
 
 describe('parseCandidate', () => {
   it('parses srflx candidate', () => {
@@ -54,5 +54,19 @@ describe('classifyIp', () => {
     expect(classifyIp('::ffff:192.168.1.1')).toBe('private');
     expect(classifyIp('::ffff:10.0.0.1')).toBe('private');
     expect(classifyIp('::ffff:203.0.113.7')).toBe('public');
+  });
+});
+
+describe('gatherIceCandidatesFromWebPage', () => {
+  it('returns null when tab creation or scripting fails', async () => {
+    vi.stubGlobal('chrome', {
+      tabs: { create: vi.fn().mockRejectedValue(new Error('Tab failed')), remove: vi.fn() },
+      scripting: { executeScript: vi.fn() },
+    });
+    try {
+      expect(await gatherIceCandidatesFromWebPage(100)).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

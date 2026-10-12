@@ -1,12 +1,22 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { getLocale, getProfileDisplayName, messages, resolveLocale, setLocale, t } from '../src/core/i18n';
 
 describe('i18n module', () => {
   it('resolves locale properly', () => {
-    expect(resolveLocale('zh_CN')).toBe('zh_CN');
-    expect(resolveLocale('en')).toBe('en');
-    expect(resolveLocale('auto')).toBeDefined();
-    expect(resolveLocale()).toBe('zh_CN');
+    try {
+      expect(resolveLocale('zh_CN')).toBe('zh_CN');
+      expect(resolveLocale('en')).toBe('en');
+      vi.stubGlobal('navigator', { language: 'en-US' });
+      expect(resolveLocale('auto')).toBe('en');
+      expect(resolveLocale()).toBe('en');
+      vi.stubGlobal('navigator', { language: 'zh-CN' });
+      expect(resolveLocale('auto')).toBe('zh_CN');
+      expect(resolveLocale()).toBe('zh_CN');
+      vi.stubGlobal('navigator', undefined);
+      expect(resolveLocale()).toBe('zh_CN');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('has 100% key parity and non-empty translations between zh_CN and en', () => {

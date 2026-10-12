@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue';
-import { Trash2, Settings, Radio, Search, Plus, ExternalLink, Shield } from '@lucide/vue';
+import { Trash2, Settings, Radio, Search, Plus, Shield } from '@lucide/vue';
 import { Toaster, toast } from 'vue-sonner';
 import { getSettings } from '../../src/core/storage/storage';
 import type { AppSettings, Profile, TabNetworkError, TabRequestLog } from '../../src/core/types';
@@ -65,7 +65,11 @@ const loadCurrentTab = async () => {
 // SW restart kills the port; reconnect resubscribes and gets a fresh snapshot.
 const subscribe = () => {
   if (port && currentTabId.value > 0) {
-    port.postMessage({ type: 'SUBSCRIBE_TAB', tabId: currentTabId.value });
+    try {
+      port.postMessage({ type: 'SUBSCRIBE_TAB', tabId: currentTabId.value });
+    } catch {
+      port = null;
+    }
   }
 };
 
@@ -97,6 +101,7 @@ const refreshState = async () => {
   settings.value = await getSettings();
   applyTheme(settings.value?.theme);
   setLocale(resolveLocale(settings.value?.language));
+  document.title = `${t('sidepanel.title')} - ${t('sidepanel.subtitle')}`;
   await loadCurrentTab();
 };
 
@@ -161,11 +166,12 @@ const addQuickRule = (host: string) => {
   chrome.runtime.sendMessage(
     { type: 'ADD_HOST_RULE', pattern: host, profileId: 'proxy', tabId: currentTabId.value },
     (res) => {
-      if (res && res.success) {
+      const err = chrome.runtime.lastError;
+      if (!err && res && res.success) {
         toast.success(`${t('popup.ruleAdded')}: *.${host}`);
         // TAB_DATA push refreshes the lists
       } else {
-        toast.error(res?.error || t('popup.addRuleFailed'));
+        toast.error(res?.error || err?.message || t('popup.addRuleFailed'));
       }
     }
   );
@@ -175,15 +181,14 @@ const clearLogs = () => {
   requests.value = [];
   errors.value = [];
   if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage && currentTabId.value > 0) {
-    chrome.runtime.sendMessage({ type: 'CLEAR_TAB_LOGS', tabId: currentTabId.value });
+    chrome.runtime.sendMessage({ type: 'CLEAR_TAB_LOGS', tabId: currentTabId.value }).catch(() => {});
   }
   toast.info(t('sidepanel.logsCleared'));
 };
 
 
-onMounted(() => {
+onMounted(async () => {
   connectPort();
-  refreshState();
   if (typeof chrome !== 'undefined' && chrome.tabs) {
     chrome.tabs.onActivated.addListener(handleTabActivated);
     chrome.tabs.onUpdated.addListener(handleTabUpdated);
@@ -191,8 +196,9 @@ onMounted(() => {
   if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
     chrome.storage.onChanged.addListener(handleStorageChange);
   }
-  document.title = `${t('sidepanel.title')} - ${t('sidepanel.subtitle')}`;
   cleanThemeListener = initThemeListener(() => settings.value?.theme);
+  await refreshState();
+  document.title = `${t('sidepanel.title')} - ${t('sidepanel.subtitle')}`;
 });
 
 onUnmounted(() => {

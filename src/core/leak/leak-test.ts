@@ -49,9 +49,18 @@ export async function fetchDnsServers(rounds = 6, timeoutMs = 8000): Promise<Dns
   const testId = randomHex(6);
   // Trigger DNS lookups; HTTP result irrelevant (NXDOMAIN / error expected)
   await Promise.allSettled(
-    Array.from({ length: rounds }, () =>
-      fetch(`https://${randomHex(4)}.${testId}.bash.ws/`, { cache: 'no-store' }).then((r) => r.text()).catch(() => {})
-    )
+    Array.from({ length: rounds }, async () => {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 5000);
+      try {
+        const r = await fetch(`https://${randomHex(4)}.${testId}.bash.ws/`, { signal: ctrl.signal, cache: 'no-store' });
+        await r.text();
+      } catch {
+        // ignore
+      } finally {
+        clearTimeout(timer);
+      }
+    })
   );
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -130,7 +139,7 @@ const IP_RE = /^[0-9a-fA-F:.]+$/;
 
 /** Parse an ICE candidate string: candidate:<f> <comp> <proto> <prio> <addr> <port> typ <type> ... */
 export function parseCandidate(raw: string): IceCandidateInfo | null {
-  const t = raw.trim().replace(/^candidate:/, '').split(/\s+/);
+  const t = raw.trim().replace(/^candidate:\s*/i, '').split(/\s+/);
   if (t.length < 8 || t[6] !== 'typ') return null;
   const port = Number(t[5]);
   return t[4] && t[7] ? { ip: t[4], type: t[7], port: Number.isFinite(port) ? port : undefined } : null;
@@ -168,17 +177,18 @@ export function classifyIp(ip: string): IpClass {
 export async function fetchExitIps(timeoutMs = 5000): Promise<EchoResult[]> {
   return Promise.all(
     ECHO_SERVICES.map(async ({ name, url }): Promise<EchoResult> => {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), timeoutMs);
       try {
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), timeoutMs);
         const res = await fetch(url, { signal: ctrl.signal, cache: 'no-store' });
-        clearTimeout(timer);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const ip = (await res.text()).trim();
         if (!IP_RE.test(ip) || ip.length > 45) throw new Error('Invalid response');
         return { name, url, ip };
       } catch (e) {
         return { name, url, error: e instanceof Error ? e.message : String(e) };
+      } finally {
+        clearTimeout(timer);
       }
     })
   );
@@ -273,14 +283,14 @@ function gatherIceCandidatesPage(timeoutMs = 4000): IceCandidateInfo[] | Promise
  * in the options page would show exposure no website can see. Run inside a
  * temporary tab that is closed afterwards.
  */
-export async function gatherIceCandidatesFromWebPage(timeoutMs = 15000): Promise<IceCandidateInfo[]> {
+export async function gatherIceCandidatesFromWebPage(timeoutMs = 15000): Promise<IceCandidateInfo[] | null> {
   if (typeof chrome === 'undefined' || !chrome.scripting?.executeScript || !chrome.tabs?.create) {
     return gatherIceCandidates();
   }
   let tabId: number | undefined;
   try {
     const created = await chrome.tabs.create({ url: 'https://example.com', active: false });
-    if (created.id === undefined) return [];
+    if (created.id === undefined) return null;
     tabId = created.id;
     // Wait for load (deadline shared with executeScript timeout below)
     const deadline = Date.now() + timeoutMs;
@@ -291,15 +301,17 @@ export async function gatherIceCandidatesFromWebPage(timeoutMs = 15000): Promise
       setTimeout(resolve, 200);
       await promise;
     }
+    if (Date.now() >= deadline) return null; // tab never finished loading
     const results = await chrome.scripting.executeScript({
       target: { tabId },
       world: 'MAIN',
       func: gatherIceCandidatesPage,
       args: [4000],
     });
-    return (results[0]?.result as IceCandidateInfo[] | undefined) ?? [];
+    const res = results[0]?.result as IceCandidateInfo[] | undefined;
+    return Array.isArray(res) ? res : null;
   } catch {
-    return []; // restricted pages reject; don't abort the whole run
+    return null;
   } finally {
     if (tabId !== undefined) {
       chrome.tabs.remove(tabId).catch(() => {});

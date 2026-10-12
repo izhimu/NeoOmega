@@ -14,16 +14,39 @@ export default defineContentScript({
       }
     };
 
-    const safeSendMessage = <T = unknown>(message: unknown, callback?: (res: T) => void) => {
-      if (!isContextValid()) return;
+    const esc = (s: unknown) =>
+      String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
+    const setActionStatus = (el: Element, text: string, isErr = false) => {
+      el.replaceChildren();
+      const span = document.createElement('span');
+      span.className = isErr ? 'status-msg err' : 'status-msg';
+      span.textContent = text;
+      el.appendChild(span);
+    };
+
+    const safeSendMessage = <T = unknown>(message: unknown, callback?: (res: T | undefined) => void) => {
+      if (!isContextValid()) {
+        callback?.(undefined);
+        return;
+      }
       try {
         chrome.runtime.sendMessage(message, (res) => {
           const err = chrome.runtime.lastError;
-          if (err) return;
+          if (err) {
+            callback?.(undefined);
+            return;
+          }
           callback?.(res);
         });
       } catch {
         // Extension context invalidated (reloaded or updated)
+        callback?.(undefined);
       }
     };
 
@@ -31,7 +54,6 @@ export default defineContentScript({
     let hostEl: HTMLDivElement | null = null;
     let shadow: ShadowRoot | null = null;
     let toastEl: HTMLDivElement | null = null;
-    let timer: number | null = null;
 
     const LOGO_SVG = `
       <svg viewBox="0 0 32 32" fill="none" class="app-icon" xmlns="http://www.w3.org/2000/svg">
@@ -44,6 +66,8 @@ export default defineContentScript({
 
     const createToastDom = () => {
       if (hostEl) return;
+      // Re-injection (extension reload/update) leaves the old root behind.
+      document.getElementById('neo-omega-toast-root')?.remove();
       hostEl = document.createElement('div');
       hostEl.id = 'neo-omega-toast-root';
       shadow = hostEl.attachShadow({ mode: 'closed' });
@@ -83,10 +107,10 @@ export default defineContentScript({
           transition:
             opacity 0.24s cubic-bezier(0.16, 1, 0.3, 1),
             transform 0.24s cubic-bezier(0.16, 1, 0.3, 1);
-          padding: 12px 14px 14px 14px;
+          padding: 12px 14px;
           display: flex;
           flex-direction: column;
-          gap: 9px;
+          gap: 10px;
         }
 
         @media (prefers-color-scheme: dark) {
@@ -215,7 +239,6 @@ export default defineContentScript({
           border: 1px solid rgba(0, 0, 0, 0.06);
           border-radius: 6px;
           padding: 6px 10px;
-          margin-top: 3px;
         }
         @media (prefers-color-scheme: dark) {
           .telemetry-row {
@@ -259,7 +282,6 @@ export default defineContentScript({
           align-items: center;
           justify-content: flex-end;
           gap: 8px;
-          margin-top: 2px;
         }
         .ui-btn {
           border: none;
@@ -306,6 +328,27 @@ export default defineContentScript({
           cursor: not-allowed;
         }
 
+        .section {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .section-title {
+          font-size: 11px;
+          font-weight: 600;
+          letter-spacing: 0.02em;
+          color: #64748b;
+          margin: 0;
+        }
+        .section-divider {
+          border-top: 1px solid #e2e8f0;
+          margin: 0;
+        }
+        @media (prefers-color-scheme: dark) {
+          .section-title { color: #94a3b8; }
+          .section-divider { border-top-color: rgba(255, 255, 255, 0.1); }
+        }
+
         .status-msg {
           font-size: 11.5px;
           font-weight: 500;
@@ -332,9 +375,11 @@ export default defineContentScript({
       wrapper.appendChild(toastEl);
 
       toastEl.addEventListener('mouseenter', () => {
+        isHovered = true;
         pauseDismissTimer();
       });
       toastEl.addEventListener('mouseleave', () => {
+        isHovered = false;
         resumeDismissTimer();
       });
 
@@ -345,10 +390,13 @@ export default defineContentScript({
     let dismissTimer: number | null = null;
     let dismissTimeRemaining = 7000;
     let dismissStartedAt = 0;
+    let isHovered = false;
 
     const startDismissTimer = (duration = 7000) => {
       clearTimeout(dismissTimer ?? undefined);
+      dismissTimer = null;
       dismissTimeRemaining = duration;
+      if (isHovered) return;
       dismissStartedAt = Date.now();
       dismissTimer = window.setTimeout(() => hideToast(), duration);
     };
@@ -362,6 +410,9 @@ export default defineContentScript({
     };
 
     const resumeDismissTimer = () => {
+      // Toast already hidden (e.g. close-click followed by mouseleave): don't
+      // schedule a timer that would prematurely dismiss a future toast.
+      if (!toastEl?.classList.contains('show')) return;
       if (dismissTimeRemaining > 400) {
         startDismissTimer(dismissTimeRemaining);
       } else {
@@ -374,111 +425,30 @@ export default defineContentScript({
       if (!toastEl) return;
       requestAnimationFrame(() => {
         toastEl?.classList.add('show');
-        startDismissTimer(7000);
+        if (!isHovered) {
+          startDismissTimer(7000);
+        } else {
+          // Re-render while hovered: refresh the budget so mouseleave doesn't
+          // inherit a stale near-zero remainder from the previous render.
+          dismissTimeRemaining = 7000;
+        }
       });
     };
 
-    const hideToast = () => {
+    // clear=true only for explicit user dismissal (X button): auto-dismiss
+    // keeps failedHosts/currentSpeedRec so unseen errors aren't lost forever
+    // (background dedups per tab and won't re-notify them).
+    const hideToast = (clear = false) => {
       if (!toastEl) return;
+      isHovered = false;
       clearTimeout(dismissTimer ?? undefined);
-      toastEl.classList.remove('show');
-    };
-
-    const renderToast = () => {
-      if (failedHosts.size === 0) {
-        hideToast();
-        return;
+      dismissTimer = null;
+      if (clear) {
+        currentSpeedRec = null;
+        speedRecApplied = false;
+        failedHosts.clear();
       }
-      createToastDom();
-      if (!toastEl) return;
-
-      const hosts = Array.from(failedHosts);
-      const count = hosts.length;
-      const titleText = isZh ? `${count} 个域名无法访问` : `${count} Unreachable Host${count > 1 ? 's' : ''}`;
-      const btnText = isZh ? '一键添加代理' : 'Proxy Hosts';
-      const muteText = isZh ? '不再提示' : "Don't Show Again";
-
-      const chipsHtml = hosts
-        .slice(0, 4)
-        .map((h) => `<span class="host-chip" title="${h}">${h}</span>`)
-        .join('') + (hosts.length > 4 ? `<span class="host-chip">+${hosts.length - 4}</span>` : '');
-
-      toastEl.innerHTML = `
-        <div class="header">
-          <div class="header-left">
-            ${LOGO_SVG}
-            <span class="title-text">${titleText}</span>
-          </div>
-          <button class="close-btn" title="Dismiss">
-            <svg viewBox="0 0 16 16" width="12" height="12"><path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-          </button>
-        </div>
-        <div class="body-content">
-          <div class="host-chip-list">${chipsHtml}</div>
-        </div>
-        <div class="actions">
-          <button class="ui-btn ghost mute-btn">${muteText}</button>
-          <button class="ui-btn primary action-btn">${btnText}</button>
-        </div>
-
-      `;
-
-      toastEl.querySelector('.close-btn')?.addEventListener('click', hideToast);
-
-      const muteBtn = toastEl.querySelector('.mute-btn') as HTMLButtonElement | null;
-      muteBtn?.addEventListener('click', () => {
-        if (!muteBtn) return;
-        muteBtn.disabled = true;
-        safeSendMessage({ type: 'MUTE_FAILURE_HOSTS', hosts });
-        for (const h of hosts) failedHosts.delete(h);
-        hideToast();
-      });
-
-      const actionBtn = toastEl.querySelector('.action-btn') as HTMLButtonElement | null;
-      actionBtn?.addEventListener('click', async () => {
-        if (!actionBtn) return;
-        actionBtn.disabled = true;
-        actionBtn.textContent = isZh ? '添加中...' : 'Adding...';
-
-        let successCount = 0;
-        let lastError = '';
-
-        for (const host of hosts) {
-          try {
-            const { promise: addPromise, resolve: addResolve } = Promise.withResolvers<{ success: boolean; error?: string }>();
-            safeSendMessage<{ success: boolean; error?: string }>(
-              { type: 'ADD_HOST_RULE', pattern: host, profileId: 'proxy' },
-              (r) => addResolve(r || { success: false })
-            );
-            const res = await addPromise;
-            if (res.success) {
-              successCount++;
-              failedHosts.delete(host);
-            } else if (res.error) {
-              lastError = res.error;
-            }
-          } catch (e) {
-            lastError = String(e);
-          }
-        }
-
-        const actionsEl = toastEl?.querySelector('.actions');
-        if (actionsEl) {
-          if (successCount > 0) {
-            actionsEl.innerHTML = `<span class="status-msg">✓ ${
-              isZh ? `已添加 ${successCount} 条规则，刷新生效` : `Added ${successCount} rules`
-            }</span>`;
-            window.setTimeout(() => hideToast(), 2500);
-          } else {
-            actionsEl.innerHTML = `<span class="status-msg err">${
-              lastError || (isZh ? '添加失败' : 'Failed to add')
-            }</span>`;
-            window.setTimeout(() => renderToast(), 2500);
-          }
-        }
-      });
-
-      showToast();
+      toastEl.classList.remove('show');
     };
 
     interface SpeedRecommendation {
@@ -491,80 +461,210 @@ export default defineContentScript({
       recommendedLatency: number;
     }
 
-    const renderSpeedRecommendation = (rec: SpeedRecommendation) => {
+    let currentSpeedRec: SpeedRecommendation | null = null;
+    let speedRecApplied = false;
+
+    // One toast, one section per notification type. A new notification of the
+    // same type merges into its section; a different type appends a section
+    // instead of replacing the visible one.
+    const renderAll = () => {
+      const hosts = Array.from(failedHosts);
+      const rec = currentSpeedRec;
+      if (hosts.length === 0 && !rec) {
+        hideToast();
+        return;
+      }
       createToastDom();
       if (!toastEl) return;
 
-      const titleText = isZh ? '加速建议' : 'Speed Boost';
-      const applyText = isZh ? '应用加速' : 'Apply Speedup';
-      const dismissText = isZh ? '忽略' : 'Ignore';
-      const speedupPct = Math.round(((rec.currentLatency - rec.recommendedLatency) / rec.currentLatency) * 100);
+      const both = hosts.length > 0 && !!rec;
+      const failureTitle = isZh
+        ? `${hosts.length} 个域名无法访问`
+        : `${hosts.length} Unreachable Host${hosts.length > 1 ? 's' : ''}`;
+      const speedTitle = isZh ? '加速建议' : 'Speed Boost';
+      const headerTitle = both ? 'NeoOmega' : hosts.length > 0 ? failureTitle : speedTitle;
 
-      toastEl.innerHTML = `
+      const sections: string[] = [];
+
+      if (hosts.length > 0) {
+        const btnText = isZh ? '一键添加代理' : 'Proxy Hosts';
+        const muteText = isZh ? '不再提示' : "Don't Show Again";
+        const chipsHtml = hosts
+          .slice(0, 4)
+          .map((h) => `<span class="host-chip" title="${esc(h)}">${esc(h)}</span>`)
+          .join('') + (hosts.length > 4 ? `<span class="host-chip">+${hosts.length - 4}</span>` : '');
+        sections.push(`
+          <div class="section failure-section">
+            ${both ? `<div class="section-title">${esc(failureTitle)}</div>` : ''}
+            <div class="body-content">
+              <div class="host-chip-list">${chipsHtml}</div>
+            </div>
+            <div class="actions">
+              <button class="ui-btn ghost mute-btn">${esc(muteText)}</button>
+              <button class="ui-btn primary action-btn">${esc(btnText)}</button>
+            </div>
+          </div>
+        `);
+      }
+
+      if (rec) {
+        const applyText = isZh ? '应用加速' : 'Apply Speedup';
+        const dismissText = isZh ? '忽略' : 'Ignore';
+        const speedupPct = Math.round(((rec.currentLatency - rec.recommendedLatency) / rec.currentLatency) * 100);
+        sections.push(`
+          <div class="section speed-section">
+            ${both ? `<div class="section-title">${esc(speedTitle)}</div>` : ''}
+            <div class="body-content">
+              <div style="margin-bottom: 3px; font-weight: 500; font-family: ui-monospace, monospace;">${esc(rec.host)}</div>
+              <div class="telemetry-row">
+                <div class="tele-item">
+                  <span class="tele-name">${esc(rec.currentProfileName)}</span>
+                  <span class="tele-num">${esc(rec.currentLatency)}ms</span>
+                </div>
+                <div class="tele-arrow">➔</div>
+                <div class="tele-item right">
+                  <span class="tele-name">${esc(rec.recommendedProfileName)}</span>
+                  <span class="tele-num fast">${esc(rec.recommendedLatency)}ms${speedupPct > 0 ? ` (-${esc(speedupPct)}%)` : ''}</span>
+                </div>
+              </div>
+            </div>
+            <div class="actions">
+              <button class="ui-btn ghost dismiss-btn">${esc(dismissText)}</button>
+              ${speedRecApplied
+                ? `<span class="status-msg">✓ ${esc(isZh ? `已添加规则：${rec.host}` : `Rule added: ${rec.host}`)}</span>`
+                : `<button class="ui-btn primary action-btn speed-btn">${esc(applyText)}</button>`}
+            </div>
+          </div>
+        `);
+      }
+
+      const toastDoc = new DOMParser().parseFromString(
+        `
         <div class="header">
           <div class="header-left">
             ${LOGO_SVG}
-            <span class="title-text">${titleText}</span>
+            <span class="title-text">${esc(headerTitle)}</span>
           </div>
           <button class="close-btn" title="Dismiss">
             <svg viewBox="0 0 16 16" width="12" height="12"><path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           </button>
         </div>
-        <div class="body-content">
-          <div style="margin-bottom: 3px; font-weight: 500; font-family: ui-monospace, monospace;">${rec.host}</div>
-          <div class="telemetry-row">
-            <div class="tele-item">
-              <span class="tele-name">${rec.currentProfileName}</span>
-              <span class="tele-num">${rec.currentLatency}ms</span>
-            </div>
-            <div class="tele-arrow">➔</div>
-            <div class="tele-item right">
-              <span class="tele-name">${rec.recommendedProfileName}</span>
-              <span class="tele-num fast">${rec.recommendedLatency}ms${speedupPct > 0 ? ` (-${speedupPct}%)` : ''}</span>
-            </div>
-          </div>
-        </div>
-        <div class="actions">
-          <button class="ui-btn ghost dismiss-btn">${dismissText}</button>
-          <button class="ui-btn primary action-btn speed-btn">${applyText}</button>
-        </div>
+        ${sections.join('<div class="section-divider"></div>')}
+        `,
+        'text/html'
+      );
+      toastEl.replaceChildren(...toastDoc.body.childNodes);
 
-      `;
+      toastEl.querySelector('.close-btn')?.addEventListener('click', () => hideToast(true));
 
-      toastEl.querySelector('.close-btn')?.addEventListener('click', hideToast);
-      toastEl.querySelector('.dismiss-btn')?.addEventListener('click', hideToast);
+      const failureSection = toastEl.querySelector('.failure-section');
+      if (failureSection && hosts.length > 0) {
+        const muteBtn = failureSection.querySelector('.mute-btn') as HTMLButtonElement | null;
+        muteBtn?.addEventListener('click', () => {
+          if (!muteBtn) return;
+          muteBtn.disabled = true;
+          safeSendMessage({ type: 'MUTE_FAILURE_HOSTS', hosts });
+          for (const h of hosts) failedHosts.delete(h);
+          renderAll();
+        });
 
-      const actionBtn = toastEl.querySelector('.action-btn.speed-btn') as HTMLButtonElement | null;
-      actionBtn?.addEventListener('click', async () => {
-        if (!actionBtn) return;
-        actionBtn.disabled = true;
-        actionBtn.textContent = isZh ? '应用中...' : 'Applying...';
-        const { promise: applyPromise, resolve: applyResolve } = Promise.withResolvers<{ success: boolean; error?: string; profileName?: string }>();
-        safeSendMessage<{ success: boolean; error?: string; profileName?: string }>(
-          {
-            type: 'APPLY_SPEED_RECOMMENDATION',
-            host: rec.host,
-            profileId: rec.recommendedProfileId,
-          },
-          (res) => applyResolve(res || { success: false })
-        );
+        const actionBtn = failureSection.querySelector('.action-btn') as HTMLButtonElement | null;
+        actionBtn?.addEventListener('click', async () => {
+          if (!actionBtn) return;
+          actionBtn.disabled = true;
+          actionBtn.textContent = isZh ? '添加中...' : 'Adding...';
 
-        const res = await applyPromise;
-        const actionsEl = toastEl?.querySelector('.actions');
-        if (actionsEl) {
-          if (res.success) {
-            actionsEl.innerHTML = `<span class="status-msg">✓ ${
-              isZh ? `已添加规则：${rec.host}` : `Rule added: ${rec.host}`
-            }</span>`;
-            window.setTimeout(hideToast, 2500);
-          } else {
-            actionsEl.innerHTML = `<span class="status-msg err">${
-              res.error || (isZh ? '应用失败' : 'Failed')
-            }</span>`;
-            window.setTimeout(hideToast, 3000);
+          // One batch message: background saves settings + recompiles PAC once
+          const { promise: addPromise, resolve: addResolve } = Promise.withResolvers<{ success: boolean; count?: number; hosts?: string[]; error?: string }>();
+          safeSendMessage<{ success: boolean; count?: number; hosts?: string[]; error?: string }>(
+            { type: 'ADD_HOST_RULE', patterns: [...hosts], profileId: 'proxy' },
+            (r) => addResolve(r || { success: false })
+          );
+          const res = await addPromise;
+          const successCount = res.success ? (res.count ?? 0) : 0;
+          const lastError = res.error || '';
+          for (const h of res.hosts ?? []) failedHosts.delete(h);
+
+          // Stale: renderAll() rebuilt the toast DOM while the IPC was in
+          // flight — refresh the live DOM instead of writing detached nodes.
+          if (!failureSection.isConnected) {
+            renderAll();
+            return;
           }
-        }
-      });
+          const actionsEl = failureSection.querySelector('.actions');
+          if (actionsEl) {
+            if (successCount > 0) {
+              setActionStatus(
+                actionsEl,
+                `✓ ${isZh ? `已添加 ${successCount} 条规则，刷新生效` : `Added ${successCount} rules`}`
+              );
+              window.setTimeout(() => renderAll(), 2500);
+            } else {
+              actionBtn.disabled = false;
+              setActionStatus(actionsEl, lastError || (isZh ? '添加失败' : 'Failed to add'), true);
+              window.setTimeout(() => renderAll(), 2500);
+            }
+          } else {
+            actionBtn.disabled = false;
+          }
+        });
+      }
+
+      const speedSection = toastEl.querySelector('.speed-section');
+      if (speedSection && rec) {
+        speedSection.querySelector('.dismiss-btn')?.addEventListener('click', () => {
+          currentSpeedRec = null;
+          speedRecApplied = false;
+          renderAll();
+        });
+
+        const speedBtn = speedSection.querySelector('.action-btn.speed-btn') as HTMLButtonElement | null;
+        speedBtn?.addEventListener('click', async () => {
+          if (!speedBtn) return;
+          speedBtn.disabled = true;
+          speedBtn.textContent = isZh ? '应用中...' : 'Applying...';
+          const { promise: applyPromise, resolve: applyResolve } = Promise.withResolvers<{ success: boolean; error?: string; profileName?: string }>();
+          safeSendMessage<{ success: boolean; error?: string; profileName?: string }>(
+            {
+              type: 'APPLY_SPEED_RECOMMENDATION',
+              host: rec.host,
+              profileId: rec.recommendedProfileId,
+            },
+            (res) => applyResolve(res || { success: false })
+          );
+
+          const res = await applyPromise;
+          // Stale: a newer recommendation or dismiss replaced this one while
+          // the IPC was in flight — don't clobber its state/DOM.
+          if (currentSpeedRec !== rec) return;
+          // A renderAll during the await detached this section — re-render.
+          if (!speedSection.isConnected) {
+            renderAll();
+            return;
+          }
+          const actionsEl = speedSection.querySelector('.actions');
+          if (actionsEl) {
+            if (res.success) {
+              speedRecApplied = true;
+              renderAll();
+              const appliedRec = rec;
+              window.setTimeout(() => {
+                if (currentSpeedRec === appliedRec) {
+                  currentSpeedRec = null;
+                  speedRecApplied = false;
+                  renderAll();
+                }
+              }, 2500);
+            } else {
+              speedBtn.disabled = false;
+              setActionStatus(actionsEl, res.error || (isZh ? '应用失败' : 'Failed'), true);
+              window.setTimeout(() => renderAll(), 3000);
+            }
+          } else {
+            speedBtn.disabled = false;
+          }
+        });
+      }
 
       showToast();
     };
@@ -582,15 +682,16 @@ export default defineContentScript({
       h.endsWith('.lan');
 
     const reportedSlowHosts = new Set<string>();
-    const THRESHOLD = 1200;
+    const THRESHOLD = 3000;
 
-    const reportSlowHost = (h: string, dur: number) => {
+    const reportSlowHost = (h: string, dur: number, protocol = window.location.protocol) => {
       if (isExcluded(h) || reportedSlowHosts.has(h)) return;
       reportedSlowHosts.add(h);
       console.log('[NeoOmega] Detected slow host:', h, `${dur}ms`);
       safeSendMessage({
         type: 'ANALYZE_SLOW_HOSTS',
-        hosts: [{ host: h, duration: dur }],
+        protocol,
+        hosts: [{ host: h, duration: dur, protocol }],
         url: window.location.href,
       });
     };
@@ -604,7 +705,7 @@ export default defineContentScript({
           if (!nav) return;
           const dur = nav.duration || (nav.responseEnd - nav.startTime);
           if (dur > THRESHOLD && window.location.hostname) {
-            reportSlowHost(window.location.hostname, Math.round(dur));
+            reportSlowHost(window.location.hostname, Math.round(dur), window.location.protocol);
           }
         }
       } catch {}
@@ -617,7 +718,7 @@ export default defineContentScript({
             try {
               const u = new URL(r.name);
               if (u.protocol === 'http:' || u.protocol === 'https:') {
-                reportSlowHost(u.hostname, Math.round(dur));
+                reportSlowHost(u.hostname, Math.round(dur), u.protocol);
               }
             } catch {}
           }
@@ -638,7 +739,7 @@ export default defineContentScript({
               try {
                 const u = new URL(entry.name);
                 if (u.protocol === 'http:' || u.protocol === 'https:') {
-                  reportSlowHost(u.hostname, Math.round(dur));
+                  reportSlowHost(u.hostname, Math.round(dur), u.protocol);
                 }
               } catch {}
             }
@@ -656,14 +757,24 @@ export default defineContentScript({
     chrome.runtime.onMessage.addListener((message) => {
       if (message?.type === 'TAB_FAILED_RESOURCES' && message.host) {
         failedHosts.add(message.host);
-        renderToast();
+        renderAll();
       }
       if (message?.type === 'TAB_ERROR_RETRACTED' && message.host) {
         failedHosts.delete(message.host);
-        renderToast();
+        renderAll();
       }
       if (message?.type === 'SPEED_RECOMMENDATION' && message.recommendation) {
-        renderSpeedRecommendation(message.recommendation);
+        currentSpeedRec = message.recommendation;
+        speedRecApplied = false;
+        renderAll();
+      }
+      // Background wiped per-tab errors on navigation (incl. SPA pushState):
+      // drop local state so the toast doesn't show the old host's errors.
+      if (message?.type === 'URL_CHANGED') {
+        failedHosts.clear();
+        currentSpeedRec = null;
+        speedRecApplied = false;
+        hideToast();
       }
     });
 
@@ -673,7 +784,7 @@ export default defineContentScript({
         for (const err of res.errors) {
           if (err.host) failedHosts.add(err.host);
         }
-        renderToast();
+        renderAll();
       }
     });
   },

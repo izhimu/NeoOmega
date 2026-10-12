@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, nextTick } from 'vue';
 import { cn } from '../../lib/utils';
 
 interface Props {
@@ -27,6 +27,13 @@ const emit = defineEmits<{
 const onInput = (event: Event) => {
   const target = event.target as HTMLInputElement;
   emit('update:modelValue', target.value);
+  // Parent may clamp/reject (e.g. port range) leaving modelValue unchanged —
+  // Vue then skips the DOM patch and the text desyncs. Force re-sync.
+  void nextTick(() => {
+    if (target.isConnected && target.value !== String(props.modelValue ?? '')) {
+      target.value = String(props.modelValue ?? '');
+    }
+  });
 };
 
 const sizeClasses = computed(() => {

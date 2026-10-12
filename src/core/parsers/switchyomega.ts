@@ -2,12 +2,15 @@
  * SwitchyOmega / ZeroOmega .bak Backup File Parser & Converter
  */
 
-import type { AppSettings, FixedProfile, PacProfile, Profile, SwitchProfile, VirtualProfile } from '../types';
+import type { AppSettings, FixedProfile, PacProfile, Profile, ProxyServer, SwitchProfile, VirtualProfile } from '../types';
+import { normalizeBypassList, normalizeSettings } from '../storage/storage';
+import { isSafeRuleRegex } from './autoproxy';
 
 interface RawProxyServer {
   scheme?: 'http' | 'https' | 'socks4' | 'socks5';
   host?: string;
   port?: number;
+  auth?: { username?: string; password?: string };
 }
 
 interface RawCondition {
@@ -28,7 +31,8 @@ interface RawProfileObject {
   fallbackProxy?: RawProxyServer;
   proxyForHttp?: RawProxyServer;
   proxyForHttps?: RawProxyServer;
-  bypassList?: RawCondition[];
+  proxyForFtp?: RawProxyServer;
+  bypassList?: RawCondition[] | string;
   rules?: RawSwitchRule[];
   defaultProfileName?: string;
   pacUrl?: string;
@@ -52,9 +56,14 @@ export function parseSwitchyOmegaBackup(jsonStr: string): AppSettings {
     throw new Error(`Failed to parse SwitchyOmega JSON backup: ${message}`);
   }
 
-  // NeoOmega native backup: plain AppSettings JSON
-  if (raw['profiles'] && typeof raw['activeProfileId'] === 'string') {
-    return raw as unknown as AppSettings;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('Invalid backup file');
+  }
+
+  // NeoOmega native backup: plain AppSettings JSON — normalize so malformed
+  // files (missing order/rules/bypassList) can't crash the caller.
+  if (raw['profiles'] && typeof raw['profiles'] === 'object' && !Array.isArray(raw['profiles']) && typeof raw['activeProfileId'] === 'string') {
+    return normalizeSettings(raw as unknown as AppSettings);
   }
 
   const profiles: Record<string, Profile> = {
@@ -82,14 +91,31 @@ export function parseSwitchyOmegaBackup(jsonStr: string): AppSettings {
     ['System Proxy', 'system'],
   ]);
 
+  const SUPPORTED_PROFILE_TYPES: Record<string, true> = {
+    FixedProfile: true,
+    SwitchProfile: true,
+    PacProfile: true,
+    VirtualProfile: true,
+  };
+  const BUILTIN_NAMES: Record<string, true> = {
+    direct: true,
+    system: true,
+    'system proxy': true,
+  };
+
   const rawEntries: Array<{ item: RawProfileObject; rawName: string; profileId: string }> = [];
+  let hasPlusEntry = false;
 
   // Pass 1: compute unique profile IDs and map names to final IDs
   for (const [key, value] of Object.entries(raw)) {
-    if (!key.startsWith('+') || typeof value !== 'object' || !value) {
+    if (!key.startsWith('+') || typeof value !== 'object' || !value || Array.isArray(value)) {
       continue;
     }
     const item = value as RawProfileObject;
+    if (!item.profileType || !SUPPORTED_PROFILE_TYPES[item.profileType]) {
+      continue;
+    }
+    hasPlusEntry = true;
     const rawName = item.name || key.slice(1);
     const baseId = rawName.toLowerCase().replace(/\s+/g, '_');
     let profileId = baseId;
@@ -99,49 +125,46 @@ export function parseSwitchyOmegaBackup(jsonStr: string): AppSettings {
       suffix++;
     }
     usedIds.add(profileId);
-    nameToId.set(rawName, profileId);
-    nameToId.set(rawName.toLowerCase(), profileId);
-    nameToId.set(key.slice(1), profileId);
-    nameToId.set(key.slice(1).toLowerCase(), profileId);
+    for (const candidate of [rawName, rawName.toLowerCase(), key.slice(1), key.slice(1).toLowerCase()]) {
+      if (!BUILTIN_NAMES[candidate.toLowerCase()]) {
+        nameToId.set(candidate, profileId);
+      }
+    }
 
     rawEntries.push({ item, rawName, profileId });
   }
 
+  if (!hasPlusEntry) {
+    throw new Error('Not a SwitchyOmega backup');
+  }
+
   function resolveProfileId(name: string | undefined, fallback: string): string {
     if (!name) return fallback;
-    return nameToId.get(name) || nameToId.get(name.toLowerCase()) || name.toLowerCase().replace(/\s+/g, '_');
+    return nameToId.get(name) || nameToId.get(name.toLowerCase()) || fallback;
   }
 
   // Pass 2: construct profiles with resolved references
   for (const { item, rawName, profileId } of rawEntries) {
     switch (item.profileType) {
       case 'FixedProfile': {
+        // Cascade mirrors formatFixedChain precedence: explicit fallbackProxy,
+        // then the NORMALIZED proxyForHttps, then proxyForHttp.
+        const mapServer = (s: RawProxyServer | undefined, defaultPort: number, defaultScheme: ProxyServer['scheme'] = 'http'): ProxyServer | undefined =>
+          s?.host ? { scheme: s.scheme ?? defaultScheme, host: s.host, port: s.port || defaultPort, ...(s.auth ? { auth: s.auth } : {}) } : undefined;
+        const proxyForHttp = mapServer(item.proxyForHttp, 80);
+        const proxyForHttps = mapServer(item.proxyForHttps, 443, 'https');
+        const proxyForFtp = mapServer(item.proxyForFtp, 80);
+        const fallbackProxy = mapServer(item.fallbackProxy, 7890) ?? proxyForHttps ?? proxyForHttp;
         const fixed: FixedProfile = {
           id: profileId,
           name: rawName,
           profileType: 'FixedProfile',
           color: item.color || '#f97316',
-          fallbackProxy: item.fallbackProxy?.host ? {
-            scheme: item.fallbackProxy.scheme || 'http',
-            host: item.fallbackProxy.host,
-            port: item.fallbackProxy.port || 7890,
-          } : undefined,
-          proxyForHttp: item.proxyForHttp?.host ? {
-            scheme: 'http',
-            host: item.proxyForHttp.host,
-            port: item.proxyForHttp.port || 80,
-          } : undefined,
-          proxyForHttps: item.proxyForHttps?.host ? {
-            scheme: 'https',
-            host: item.proxyForHttps.host,
-            port: item.proxyForHttps.port || 443,
-          } : undefined,
-          bypassList: Array.isArray(item.bypassList)
-            ? item.bypassList.map((b) => ({
-                conditionType: b.conditionType || 'BypassCondition',
-                pattern: b.pattern || '',
-              }))
-            : [],
+          fallbackProxy,
+          proxyForHttp,
+          proxyForHttps,
+          proxyForFtp,
+          bypassList: normalizeBypassList(item.bypassList),
         };
         profiles[profileId] = fixed;
         order.push(profileId);
@@ -159,16 +182,22 @@ export function parseSwitchyOmegaBackup(jsonStr: string): AppSettings {
           color: item.color || '#a855f7',
           defaultProfileId: defaultId,
           rules: Array.isArray(item.rules)
-            ? item.rules.map((r, idx) => ({
-                id: `r_${idx}_${Date.now()}`,
-                enabled: true,
-                condition: {
-                  conditionType: r.condition?.conditionType || 'HostWildcardCondition',
-                  pattern: r.condition?.pattern || '',
-                },
-                profileId: resolveProfileId(r.profileName, 'direct'),
-                note: r.note,
-              }))
+            ? item.rules
+                .filter(
+                  (r) =>
+                    (r.condition?.conditionType !== 'UrlRegexCondition' && r.condition?.conditionType !== 'HostRegexCondition') ||
+                    isSafeRuleRegex(r.condition?.pattern || '')
+                )
+                .map((r, idx) => ({
+                  id: `r_${idx}_${Date.now()}`,
+                  enabled: true,
+                  condition: {
+                    conditionType: r.condition?.conditionType || 'HostWildcardCondition',
+                    pattern: r.condition?.pattern || '',
+                  },
+                  profileId: resolveProfileId(r.profileName, 'direct'),
+                  note: r.note,
+                }))
             : [],
         };
         if (item.ruleList?.url) {

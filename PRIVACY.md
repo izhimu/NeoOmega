@@ -29,6 +29,7 @@ The extension only initiates network connections in direct response to user conf
 - `sidePanel`: Displays the extension control panel in Chrome's side panel.
 - `scripting`: Runs local diagnostics in a sandboxed script to verify WebRTC IP leak protection.
 - `privacy`: Configures WebRTC IP handling policies to prevent IP exposure.
+- `tabs`: Reads the active tab's URL to match it against your switch rules and to clear per-tab error indicators when navigating.
 - `<all_urls>`: Intercepts network authentication challenges across configured proxy destinations.
 
 ## 5. Contact & Open Source

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { formatProxyDirective, generatePacScript, generateTestPacScript, generateProbePacScript, resolveProfile } from '../src/core/pac/generator';
-import { matchCondition, matchSwitchProfile } from '../src/core/pac/matcher';
+import { formatProxyDirective, generatePacScript, generateTestPacScript, generateProbePacScript, generateBatchProbePacScript, resolveProfile } from '../src/core/pac/generator';
+import { conditionToPacCode, matchCondition, matchSwitchProfile, matchSwitchProfileFull } from '../src/core/pac/matcher';
 import type { FixedProfile, Profile, ProxyServer, SwitchProfile, VirtualProfile } from '../src/core/types';
 
 describe('Condition Matcher', () => {
@@ -234,7 +234,7 @@ describe('PAC Generator', () => {
     const pac = generateTestPacScript(testProxy, targetHost);
     const sandbox = new Function(`${pac}\nreturn FindProxyForURL;`)();
 
-    expect(sandbox('http://cp.cloudflare.com/generate_204', 'cp.cloudflare.com')).toBe('SOCKS5 192.168.1.10:1080; SOCKS 192.168.1.10:1080; DIRECT');
+    expect(sandbox('http://cp.cloudflare.com/generate_204', 'cp.cloudflare.com')).toBe('SOCKS5 192.168.1.10:1080; SOCKS 192.168.1.10:1080');
     expect(sandbox('https://google.com/', 'google.com')).toBe('DIRECT');
   });
 });
@@ -298,6 +298,20 @@ describe('PAC performance codegen', () => {
     const sandbox = new Function(`${pac}\nreturn FindProxyForURL;`)();
     expect(sandbox('http://x.com/KEYWORDabc', 'x.com')).toBe('PROXY 127.0.0.1:7890');
     expect(sandbox('http://x.com/nothing', 'x.com')).toBe('DIRECT');
+  });
+
+  it('prevents Object.prototype pollution in hostRules suffix map', () => {
+    const pac = generatePacScript(makeSwitch(['||constructor.com', '||other.net']), profiles);
+    const sandbox = new Function(`${pac}\nreturn FindProxyForURL;`)();
+    expect(sandbox('http://constructor/', 'constructor')).toBe('DIRECT');
+  });
+
+  it('dedupes without collision when patterns contain colons', () => {
+    const pac = generatePacScript(makeSwitch(['|http://a:80', '|http://a:80', '|http://a']), profiles);
+    const countA80 = pac.split('http:\\/\\/a:80').length - 1;
+    const countA = pac.split('http:\\/\\/a.*').length - 1;
+    expect(countA80).toBe(1);
+    expect(countA).toBe(1);
   });
 });
 
@@ -387,7 +401,7 @@ describe('Speed Recommendation Probes', () => {
     const directProfile: Profile = { id: 'direct', name: 'Direct', profileType: 'DirectProfile' };
     const probePac = generateProbePacScript('PROXY 10.0.0.1:8080', 'slow.com', directProfile);
     const sandbox = new Function(`${probePac}\nreturn FindProxyForURL;`)();
-    expect(sandbox('https://slow.com/', 'slow.com')).toBe('PROXY 10.0.0.1:8080; DIRECT');
+    expect(sandbox('https://slow.com/', 'slow.com')).toBe('PROXY 10.0.0.1:8080');
     expect(sandbox('https://other.com/', 'other.com')).toBe('DIRECT');
   });
 
@@ -410,46 +424,98 @@ describe('Speed Recommendation Probes', () => {
     expect(matchSwitchProfile(sw, 'https://slow.com/', 'slow.com')).toBe('direct');
   });
 
-  it('deduplicates and updates existing host rules instead of duplicating', () => {
+  it('matchSwitchProfileFull resolves ruleList cache like PAC routing does', () => {
     const sw: SwitchProfile = {
       id: 'sw',
       name: 'Switch',
       profileType: 'SwitchProfile',
       defaultProfileId: 'direct',
-      rules: [
-        {
-          id: 'r_old_1',
-          enabled: true,
-          condition: { conditionType: 'HostWildcardCondition', pattern: '*.github.com' },
-          profileId: 'direct',
-        },
-        {
-          id: 'r_old_2',
-          enabled: true,
-          condition: { conditionType: 'HostWildcardCondition', pattern: '*.github.com' },
-          profileId: 'proxy',
-        },
-      ],
+      rules: [],
+      ruleList: {
+        id: 'rl',
+        url: 'https://example.com/list.txt',
+        format: 'autoproxy',
+        matchProfileId: 'proxy1',
+        defaultProfileId: 'direct',
+        enabled: true,
+        rulesCache: ['||gfw-blocked.com', '@@||whitelisted.com'],
+      },
     };
+    // proxied via rule list — matchSwitchProfile alone would wrongly say 'direct'
+    expect(matchSwitchProfile(sw, 'https://gfw-blocked.com/', 'gfw-blocked.com')).toBe('direct');
+    expect(matchSwitchProfileFull(sw, 'https://gfw-blocked.com/', 'gfw-blocked.com')).toBe('proxy1');
+    expect(matchSwitchProfileFull(sw, 'https://www.gfw-blocked.com/', 'www.gfw-blocked.com')).toBe('proxy1');
+    // whitelist entry → default route
+    expect(matchSwitchProfileFull(sw, 'https://whitelisted.com/', 'whitelisted.com')).toBe('direct');
+    // no hit anywhere → default
+    expect(matchSwitchProfileFull(sw, 'https://other.com/', 'other.com')).toBe('direct');
+  });
 
-    const pattern = 'github.com';
-    const rawPattern = pattern.trim();
-    const rulePattern = `*.${rawPattern}`;
-    const cleanHost = rawPattern.replace(/^\*\./, '');
-    const isMatch = (p: string) => p === rulePattern || p === rawPattern || p.replace(/^\*\./, '') === cleanHost;
-
-    sw.rules = sw.rules.filter(
-      (r) => !(r.condition.conditionType === 'HostWildcardCondition' && isMatch(r.condition.pattern))
+  it('batch probe PAC routes only marked probe URLs, user traffic unchanged', () => {
+    const directProfile: Profile = { id: 'direct', name: 'Direct', profileType: 'DirectProfile' };
+    const pac = generateBatchProbePacScript(
+      [
+        { marker: '0', directive: 'DIRECT' },
+        { marker: '1', directive: 'PROXY 10.0.0.1:8080' },
+        { marker: '2', directive: 'SOCKS5 10.0.0.2:1080' },
+      ],
+      'slow.com',
+      directProfile
     );
-    sw.rules.unshift({
-      id: 'r_new',
-      enabled: true,
-      condition: { conditionType: 'HostWildcardCondition', pattern: rulePattern },
-      profileId: 'direct',
-    });
+    const sandbox = new Function(`${pac}\nreturn FindProxyForURL;`)();
+    // marked probe URLs → per-candidate directives
+    expect(sandbox('https://slow.com/?__neo_probe=0&_t=1', 'slow.com')).toBe('DIRECT');
+    expect(sandbox('https://slow.com/?__neo_probe=1&_t=1', 'slow.com')).toBe('PROXY 10.0.0.1:8080');
+    expect(sandbox('http://slow.com/?__neo_probe=2&_t=1', 'slow.com')).toBe('SOCKS5 10.0.0.2:1080');
+    // unmarked user traffic to same host → base routing (hijack impossible)
+    expect(sandbox('https://slow.com/', 'slow.com')).toBe('DIRECT');
+    expect(sandbox('https://slow.com/path', 'slow.com')).toBe('DIRECT');
+    expect(sandbox('https://other.com/__neo_probe_1', 'other.com')).toBe('DIRECT');
+  });
 
-    expect(sw.rules).toHaveLength(1);
-    expect(sw.rules[0]!.condition.pattern).toBe('*.github.com');
-    expect(sw.rules[0]!.profileId).toBe('direct');
+  it('generates test/probe PAC script with lowercase target host comparison', () => {
+    const probePac = generateProbePacScript('PROXY 10.0.0.1:8080', 'SlowHost.COM');
+    expect(probePac).toContain('host === "slowhost.com"');
+    const sandbox = new Function(`${probePac}\nreturn FindProxyForURL;`)();
+    expect(sandbox('https://slowhost.com/', 'slowhost.com')).toBe('PROXY 10.0.0.1:8080');
+  });
+
+  it('handles empty or whitespace pattern in conditionToPacCode and matchCondition', () => {
+    const emptyRegex = { conditionType: 'HostRegexCondition' as const, pattern: '' };
+    const blankRegex = { conditionType: 'UrlRegexCondition' as const, pattern: '   ' };
+    const emptyKw = { conditionType: 'KeywordCondition' as const, pattern: '' };
+    expect(conditionToPacCode(emptyRegex)).toBe('false');
+    expect(conditionToPacCode(blankRegex)).toBe('false');
+    expect(conditionToPacCode(emptyKw)).toBe('false');
+    expect(matchCondition(emptyRegex, 'http://test.com', 'test.com')).toBe(false);
+    expect(matchCondition(blankRegex, 'http://test.com', 'test.com')).toBe(false);
+    expect(matchCondition(emptyKw, 'http://test.com', 'test.com')).toBe(false);
+  });
+
+  it('escapes regex slashes parity-aware', () => {
+    const c1 = { conditionType: 'HostRegexCondition' as const, pattern: 'a/b' };
+    expect(conditionToPacCode(c1)).toBe('/a\\/b/i.test(host)');
+
+    const c2 = { conditionType: 'HostRegexCondition' as const, pattern: 'a\\/b' };
+    expect(conditionToPacCode(c2)).toBe('/a\\/b/i.test(host)');
+
+    const c3 = { conditionType: 'HostRegexCondition' as const, pattern: 'a\\\\/b' };
+    expect(conditionToPacCode(c3)).toBe('/a\\\\\\/b/i.test(host)');
+  });
+
+  it('guards IPv6 literals in <local> bypass condition', () => {
+    const cond = { conditionType: 'BypassCondition' as const, pattern: '<local>' };
+    expect(matchCondition(cond, 'http://[2001:db8::1]/', '2001:db8::1')).toBe(false);
+    expect(matchCondition(cond, 'http://[::1]/', '::1')).toBe(true);
+    expect(matchCondition(cond, 'http://localhost/', 'localhost')).toBe(true);
+    expect(matchCondition(cond, 'http://intranet/', 'intranet')).toBe(true);
+
+    const pac = conditionToPacCode(cond);
+    expect(pac).toContain("host.indexOf(':') === -1");
+    const checkPac = new Function('host', 'isPlainHostName', `return (${pac});`);
+    const isPlain = (h: string) => h.indexOf('.') === -1;
+    expect(checkPac('2001:db8::1', isPlain)).toBe(false);
+    expect(checkPac('::1', isPlain)).toBe(true);
+    expect(checkPac('intranet', isPlain)).toBe(true);
   });
 });

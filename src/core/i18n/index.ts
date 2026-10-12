@@ -24,6 +24,7 @@ export const messages = {
       proxy: 'Proxy',
       active: 'Active',
       direct: 'Direct',
+      timeout: 'Timeout',
     },
     // Profiles
     profiles: {
@@ -160,6 +161,9 @@ export const messages = {
       noRulesCached: 'No rules cached yet. Click "Update Now" to download.',
       noRulesMatch: 'No matching rules found',
       loadMoreRules: 'Load more... ({count} remaining)',
+      rulesPrevPage: 'Previous page',
+      rulesNextPage: 'Next page',
+      rulesTotal: '{count} rules',
       copyRules: 'Copy All',
       rulesCopied: 'Rules copied to clipboard',
 
@@ -194,6 +198,7 @@ export const messages = {
       leakDnsOk: 'DNS resolvers match the exit region',
       leakDnsBad: 'DNS resolvers outside the exit region',
       leakDnsNone: 'No resolver data returned',
+      leakTestFailed: 'Test failed',
       networkDesc: 'WebRTC and connection privacy options.',
       backupTitle: 'Backup & Restore',
       backupDesc: 'Export or restore all profiles, rules and preferences.',
@@ -306,6 +311,7 @@ export const messages = {
       proxy: '代理',
       active: '当前生效',
       direct: '直接连接',
+      timeout: '超时',
     },
     // Profiles
     profiles: {
@@ -442,6 +448,9 @@ export const messages = {
       noRulesCached: '暂无缓存规则，请先点击“立即更新”下载。',
       noRulesMatch: '未找到匹配规则',
       loadMoreRules: '加载更多... (剩余 {count} 条)',
+      rulesPrevPage: '上一页',
+      rulesNextPage: '下一页',
+      rulesTotal: '共 {count} 条',
       copyRules: '复制全部',
       rulesCopied: '已复制全部规则到剪贴板',
 
@@ -476,6 +485,7 @@ export const messages = {
       leakDnsOk: 'DNS 解析器与出口地区一致',
       leakDnsBad: 'DNS 解析器位于出口地区之外',
       leakDnsNone: '未获取到解析器数据',
+      leakTestFailed: '检测失败',
       networkDesc: 'WebRTC 与连接隐私选项。',
       backupTitle: '备份与恢复',
       backupDesc: '导出或恢复全部情景模式、切换规则与偏好设置。',

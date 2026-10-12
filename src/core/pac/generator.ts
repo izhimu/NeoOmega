@@ -4,7 +4,7 @@
  */
 
 import type { FixedProfile, Profile, ProxyServer, SwitchProfile } from '../types';
-import { parseAutoProxyLine } from '../parsers/autoproxy';
+import { parseRuleListCache } from '../parsers/autoproxy';
 import { conditionToPacCode } from './matcher';
 /**
  * Format ProxyServer into standard PAC return directive
@@ -135,6 +135,27 @@ export function generateSwitchPacScript(
   profile: SwitchProfile,
   profiles: Record<string, Profile>
 ): string {
+  // PAC JS context persists across FindProxyForURL calls: top-level statements
+  // run once at script eval, function-body statements run per request URL.
+  // Hoist everything invariant (regex literals, suffix map) to top scope —
+  // a regex literal inside the body still allocates a RegExp object per call.
+  const topLevel: string[] = [];
+  let regexCount = 0;
+  let needsLurl = false;
+  const hoist = (code: string): string => {
+    const m = /^\/(.+)\/(i*)\.test\((host|url)\)$/.exec(code);
+    if (m) {
+      const name = `__re${regexCount++}`;
+      topLevel.push(`var ${name} = /${m[1]}/${m[2]};`);
+      return `${name}.test(${m[3]})`;
+    }
+    if (code.includes('url.toLowerCase().indexOf(')) {
+      needsLurl = true;
+      return code.replace(/url\.toLowerCase\(\)\.indexOf\(/g, '__lurl.indexOf(');
+    }
+    return code;
+  };
+
   const lines: string[] = [
     'function FindProxyForURL(url, host) {',
     '  "use strict";',
@@ -144,7 +165,7 @@ export function generateSwitchPacScript(
   // Evaluate each switch rule in sequence
   for (const rule of profile.rules) {
     if (!rule.enabled) continue;
-    const testCode = conditionToPacCode(rule.condition);
+    const testCode = hoist(conditionToPacCode(rule.condition));
     const directive = getProfileDirective(rule.profileId, profiles);
     lines.push(`  if (${testCode}) return ${JSON.stringify(directive)};`);
   }
@@ -163,12 +184,11 @@ export function generateSwitchPacScript(
     const whitelistLines: string[] = [];
     const proxyLines: string[] = [];
     const SUFFIX_RE = /^\*\.([A-Za-z0-9.-]+)$/;
-    for (let i = 0; i < cache.length; i++) {
-      const line = cache[i];
-      if (!line) continue;
-      const rule = parseAutoProxyLine(line, i, rl.matchProfileId, rl.defaultProfileId || profile.defaultProfileId);
-      if (!rule) continue;
-      const key = `${rule.condition.conditionType}:${rule.condition.pattern}:${rule.profileId}`;
+    // Memoized parse: applyProfile runs on every switch/startup/rule add —
+    // without the cache each one re-parses the full (4000+) line list.
+    const parsed = parseRuleListCache(cache, rl.matchProfileId, rl.defaultProfileId || profile.defaultProfileId);
+    for (const rule of parsed) {
+      const key = `${rule.condition.conditionType}\x03${rule.condition.pattern}\x03${rule.profileId}`;
       if (seen.has(key)) continue;
       seen.add(key);
       const isWhitelist = rule.profileId !== rl.matchProfileId;
@@ -181,7 +201,7 @@ export function generateSwitchPacScript(
           continue;
         }
       }
-      const lineCode = `  if (${conditionToPacCode(rule.condition)}) return ${JSON.stringify(directive)};`;
+      const lineCode = `  if (${hoist(conditionToPacCode(rule.condition))}) return ${JSON.stringify(directive)};`;
       if (isWhitelist) {
         whitelistLines.push(lineCode);
       } else {
@@ -193,8 +213,9 @@ export function generateSwitchPacScript(
       const entries = [...suffixMap.entries()]
         .map(([suffix, d]) => `${JSON.stringify(suffix)}:${JSON.stringify(d)}`)
         .join(',');
-      lines.push('  // var hostRules = { suffix map }');
-      lines.push(`  var hostRules = Object.assign(Object.create(null), {${entries}});`);
+      // Top scope: built once per script eval, not per request. SUFFIX_RE's
+      // [A-Za-z0-9.-] charset keeps __proto__ out, plain literal is safe.
+      topLevel.push(`var hostRules = Object.assign(Object.create(null), {${entries}});`);
       lines.push('  var hostParts = host.toLowerCase().split(".");');
       lines.push('  for (var i = 0; i < hostParts.length; i++) {');
       lines.push('    var hit = hostRules[hostParts.slice(i).join(".")];');
@@ -208,7 +229,8 @@ export function generateSwitchPacScript(
   lines.push(`  return ${JSON.stringify(defaultDirective)};`);
   lines.push('}');
 
-  return lines.join('\n');
+  if (needsLurl) lines.splice(3, 0, '  var __lurl = url.toLowerCase();');
+  return [...topLevel, ...lines].join('\n');
 }
 
 /**
@@ -254,22 +276,55 @@ export function generateProbePacScript(
   currentProfile?: Profile,
   profiles: Record<string, Profile> = {}
 ): string {
-  const finalDirective = directive === 'DIRECT' || directive.endsWith('; DIRECT') ? directive : `${directive}; DIRECT`;
-  const probeCondition = `if (host === ${JSON.stringify(targetHost)}) return ${JSON.stringify(finalDirective)};`;
+  return generateBatchProbePacScript([{ directive }], targetHost, currentProfile, profiles);
+}
+
+/**
+ * Generate one PAC covering all probe candidates at once. Each candidate is
+ * selected by a URL path marker (`/__neo_probe_<marker>`) that only probe
+ * fetches carry — real user traffic never matches, so its routing is
+ * bit-identical to the base script. One global proxy write per probe session
+ * instead of one per candidate.
+ *
+ * No `; DIRECT` fallback: a probe measuring a dead proxy must fail, not
+ * silently pass via a direct connection (false-positive latency).
+ */
+export function generateBatchProbePacScript(
+  candidates: Array<{ marker?: string; directive: string }>,
+  targetHost: string,
+  currentProfile?: Profile,
+  profiles: Record<string, Profile> = {}
+): string {
+  const block = candidates
+    .map(({ marker, directive }) => {
+      // Query-param marker: matches the real request URL regardless of path
+      // form or explicit port. User traffic never carries this param.
+      const urlTest = marker != null
+        ? ` && url.indexOf(${JSON.stringify(`__neo_probe=${marker}`)}) !== -1`
+        : '';
+      return `  if (host === ${JSON.stringify(targetHost.toLowerCase().replace(/^\[|\]$/g, ''))}${urlTest}) return ${JSON.stringify(directive)};`;
+    })
+    .join('\n');
 
   if (!currentProfile) {
-    return `function FindProxyForURL(url, host) {\n  ${probeCondition}\n  return "DIRECT";\n}`;
+    return `function FindProxyForURL(url, host) {\n${block}\n  return "DIRECT";\n}`;
   }
 
   const baseScript = generatePacScript(currentProfile, profiles);
+  // Insert after the directive prologue + host normalization: splicing right
+  // after the function header would push "use strict" out of the prologue
+  // (sloppy mode) and compare against the un-normalized host.
   const needle = 'function FindProxyForURL(url, host) {';
-  const idx = baseScript.indexOf(needle);
-  if (idx !== -1) {
-    const insertPos = idx + needle.length;
-    return baseScript.slice(0, insertPos) + `\n  ${probeCondition}` + baseScript.slice(insertPos);
+  const anchors = ['  host = host.replace(/\\.$/, "");', '  "use strict";', needle];
+  for (const anchor of anchors) {
+    const idx = baseScript.indexOf(anchor);
+    if (idx !== -1) {
+      const insertPos = idx + anchor.length;
+      return baseScript.slice(0, insertPos) + `\n${block}` + baseScript.slice(insertPos);
+    }
   }
 
-  return `function FindProxyForURL(url, host) {\n  ${probeCondition}\n  return "DIRECT";\n}`;
+  return `function FindProxyForURL(url, host) {\n${block}\n  return "DIRECT";\n}`;
 }
 
 /**
