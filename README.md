@@ -3,6 +3,23 @@
 > 为 Chrome 与现代化 Chromium 浏览器打造的高性能、无技术债代理管理与规则分流扩展（Manifest V3）。
 > 作为 SwitchyOmega / ZeroOmega 的现代化重构接棒者，彻底告别旧时代 CoffeeScript、AngularJS 1.x 与 Grunt 架构。
 
+
+<p align="center">
+  <a href="https://chromewebstore.google.com/detail/neoomega-modern-proxy-man/cjkeldmnfoomnfciapmpjadoigjhbnjc"><img src="https://img.shields.io/badge/Chrome_Web_Store-4285F4?style=flat-square&logo=google-chrome&logoColor=white" alt="Chrome Web Store" /></a>
+  <a href="https://microsoftedge.microsoft.com/addons/detail/neoomega-%E7%8E%B0%E4%BB%A3%E5%8C%96%E4%BB%A3%E7%90%86%E5%88%86%E6%B5%81%E6%89%A9%E5%B1%95/ocjkanamaifjjoknjhgjkgahaakaicpl"><img src="https://img.shields.io/badge/Edge_Add--ons-0078D7?style=flat-square&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2ZmZiIgZD0iTTIxLjg2IDE3Ljg2cS4xNCAwIC4yNS4xMnEuMS4xMy4xLjI1dC0uMTEuMzNsLS4zMi40NmwtLjQzLjUzbC0uNDQuNXEtLjIxLjI1LS4zOC40MmwtLjIyLjIzcS0uNTguNTMtMS4zNCAxLjA0dC0xLjYuOTFxLS44Ni40LTEuNzQuNjR0LTEuNjcuMjRxLS45IDAtMS42OS0uMjhxLS44LS4yOC0xLjQ4LS43OFQ5LjU3IDIxLjNxLS41My0uNjYtLjkyLTEuNDRxLS4zOC0uNzctLjU4LTEuNnQtLjItMS42N3EwLTEgLjMyLTEuOTZxLjMzLS45Ny44Ny0xLjhxLjE0Ljk1LjU1IDEuNzd0MS4wMiAxLjVxLjYuNjggMS4zOCAxLjIxcS43OC41NCAxLjY0Ljl0MS43Ny41NnEuOTIuMiAxLjguMnExLjEyIDAgMi4xOC0uMjRxMS4wNi0uMjMgMi4wNi0uNzJsLjItLjF6bS0xNS41LTEuMjdxMCAxLjEuMjcgMi4xNXEuMjcgMS4wNi43OCAyLjAzcS41MS45NiAxLjI0IDEuNzdxLjc0LjgyIDEuNjYgMS40cS0xLjQ3LS4yLTIuOC0uNzRxLTEuMzMtLjU1LTIuNDgtMS4zN3EtMS4xNS0uODMtMi4wOC0xLjlxLS45Mi0xLjA3LTEuNTgtMi4zM1QuMzYgMTQuOTRRMCAxMy41NCAwIDEyLjA2cTAtLjgxLjMyLTEuNDlxLjMxLS42OC44My0xLjIzcS41My0uNTUgMS4yLS45NnEuNjYtLjQgMS4zNS0uNjZxLjc0LS4yNyAxLjUtLjM5cS43OC0uMTIgMS41NS0uMTJxLjcgMCAxLjQyLjFxLjcyLjEyIDEuNC4zNXQxLjMyLjU3cS42My4zNSAxLjE2LjgzcS0uMzUgMC0uNy4wN3EtLjMzLjA3LS42NS4yM3YtLjAycS0uNjMuMjgtMS4yLjc0dC0xLjA1IDEuMDR0LS44NyAxLjI2cS0uMzguNjctLjY1IDEuMzlxLS4yNy43MS0uNDIgMS40NHEtLjE1LjcyLS4xNSAxLjM4TTExLjk2LjA2cTEuNyAwIDMuMzMuMzlxMS42My4zOCAzLjA3IDEuMTVxbTEuNDMuNzcgMi42MiAxLjkzcTEuMTggMS4xNiAxLjk4IDIuN3EuNDkuOTQuNzYgMS45NnEuMjggMSAuMjggMi4wOHEwIC44OS0uMjMgMS43cS0uMjQuOC0uNjkgMS40OHQtMS4xIDEuMjJxLS42NC41My0xLjQ1Ljg4cS0uNTQuMjQtMS4xMS4zNnEtLjU4LjEzLTEuMTYuMTNxLS40MiAwLS45Ny0uMDNxLS41NC0uMDMtMS4xLS4xMnEtLjU1LS4xLTEuMDUtLjI4cS0uNS0uMTktLjg0LS41cS0uMTItLjA5LS4yMy0uMjRxLS4xLS4xNi0uMS0uMzNxMC0uMTUuMTYtLjM1dC4zNS0uNXEuMi0uMjguMzYtLjY4dC4xNi0uOTVxMC0xLjA2LS40LTEuOTZxLS40LS45MS0xLjA2LTEuNjRxLS42Ni0uNzQtMS41Mi0xLjI4cS0uODYtLjU1LTEuNzktLjg5cS0uODQtLjMtMS43Mi0uNDRxLS44Ny0uMTQtMS43Ni0uMTRxLTEuNTUgMC0zLjA2LjQ1VC45NCA3LjU1cS43MS0xLjc0IDEuODEtMy4xM3ExLjEtMS4zOCAyLjUyLTIuMzVRNi42OCAxLjEgOC4zNy41OHExLjctLjUyIDMuNTgtLjUyWiIvPjwvc3ZnPg==" alt="Microsoft Edge Add-ons" /></a>
+  <a href="https://addons.mozilla.org/zh-CN/firefox/addon/neoomega-modern-proxy-manager/"><img src="https://img.shields.io/badge/Firefox_Add--ons-FF7139?style=flat-square&logo=firefox-browser&logoColor=white" alt="Firefox Add-ons" /></a>
+  <a href="https://github.com/izhimu/NeoOmega/releases"><img src="https://img.shields.io/github/v/release/izhimu/NeoOmega?style=flat-square&color=38bdf8" alt="GitHub Release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" alt="License: MIT" /></a>
+</p>
+
+## 安装与商店直达
+
+| 平台 / 商店 | 安装直达 | 状态 |
+| :--- | :--- | :--- |
+| **Chrome 应用商店** | [👉 Chrome Web Store 直达](https://chromewebstore.google.com/detail/neoomega-modern-proxy-man/cjkeldmnfoomnfciapmpjadoigjhbnjc) | 已上架官方审核通过 |
+| **Edge 扩展中心** | [👉 Microsoft Edge Add-ons 直达](https://microsoftedge.microsoft.com/addons/detail/neoomega-%E7%8E%B0%E4%BB%A3%E5%8C%96%E4%BB%A3%E7%90%86%E5%88%86%E6%B5%81%E6%89%A9%E5%B1%95/ocjkanamaifjjoknjhgjkgahaakaicpl) | 已上架官方审核通过 |
+| **Firefox 附加组件** | [👉 Firefox Add-ons (AMO) 直达](https://addons.mozilla.org/zh-CN/firefox/addon/neoomega-modern-proxy-manager/) | 已上架官方审核通过 |
+| **离线安装包 (Crx / Zip)** | [GitHub Releases 下载](https://github.com/izhimu/NeoOmega/releases) | 开源发布 |
 ---
 
 ## 核心特性与架构升级
