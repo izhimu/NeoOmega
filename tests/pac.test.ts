@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatProxyDirective, generatePacScript, generateTestPacScript, generateProbePacScript, generateBatchProbePacScript, resolveProfile } from '../src/core/pac/generator';
+import { formatProxyDirective, generatePacScript, generateTestPacScript, generateProbePacScript, resolveProfile } from '../src/core/pac/generator';
 import { conditionToPacCode, matchCondition, matchSwitchProfile, matchSwitchProfileFull } from '../src/core/pac/matcher';
 import type { FixedProfile, Profile, ProxyServer, SwitchProfile, VirtualProfile } from '../src/core/types';
 
@@ -449,28 +449,6 @@ describe('Speed Recommendation Probes', () => {
     expect(matchSwitchProfileFull(sw, 'https://whitelisted.com/', 'whitelisted.com')).toBe('direct');
     // no hit anywhere → default
     expect(matchSwitchProfileFull(sw, 'https://other.com/', 'other.com')).toBe('direct');
-  });
-
-  it('batch probe PAC routes only marked probe URLs, user traffic unchanged', () => {
-    const directProfile: Profile = { id: 'direct', name: 'Direct', profileType: 'DirectProfile' };
-    const pac = generateBatchProbePacScript(
-      [
-        { marker: '0', directive: 'DIRECT' },
-        { marker: '1', directive: 'PROXY 10.0.0.1:8080' },
-        { marker: '2', directive: 'SOCKS5 10.0.0.2:1080' },
-      ],
-      'slow.com',
-      directProfile
-    );
-    const sandbox = new Function(`${pac}\nreturn FindProxyForURL;`)();
-    // marked probe URLs → per-candidate directives
-    expect(sandbox('https://slow.com/?__neo_probe=0&_t=1', 'slow.com')).toBe('DIRECT');
-    expect(sandbox('https://slow.com/?__neo_probe=1&_t=1', 'slow.com')).toBe('PROXY 10.0.0.1:8080');
-    expect(sandbox('http://slow.com/?__neo_probe=2&_t=1', 'slow.com')).toBe('SOCKS5 10.0.0.2:1080');
-    // unmarked user traffic to same host → base routing (hijack impossible)
-    expect(sandbox('https://slow.com/', 'slow.com')).toBe('DIRECT');
-    expect(sandbox('https://slow.com/path', 'slow.com')).toBe('DIRECT');
-    expect(sandbox('https://other.com/__neo_probe_1', 'other.com')).toBe('DIRECT');
   });
 
   it('generates test/probe PAC script with lowercase target host comparison', () => {

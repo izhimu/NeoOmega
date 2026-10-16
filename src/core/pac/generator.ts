@@ -268,7 +268,14 @@ export function generatePacScript(
 }
 
 /**
- * Generate a probe PAC script for testing a specific proxy directive against a target host
+ * Generate a probe PAC script routing targetHost through one proxy directive.
+ * Host-only match: Chrome strips path+query of HTTPS URLs before PAC
+ * evaluation (PacHttpsUrlStrippingEnabled), so URL markers cannot select
+ * candidates — callers probing multiple candidates write this PAC per
+ * candidate sequentially.
+ *
+ * No `; DIRECT` fallback: a probe measuring a dead proxy must fail, not
+ * silently pass via a direct connection (false-positive latency).
  */
 export function generateProbePacScript(
   directive: string,
@@ -276,35 +283,7 @@ export function generateProbePacScript(
   currentProfile?: Profile,
   profiles: Record<string, Profile> = {}
 ): string {
-  return generateBatchProbePacScript([{ directive }], targetHost, currentProfile, profiles);
-}
-
-/**
- * Generate one PAC covering all probe candidates at once. Each candidate is
- * selected by a URL path marker (`/__neo_probe_<marker>`) that only probe
- * fetches carry — real user traffic never matches, so its routing is
- * bit-identical to the base script. One global proxy write per probe session
- * instead of one per candidate.
- *
- * No `; DIRECT` fallback: a probe measuring a dead proxy must fail, not
- * silently pass via a direct connection (false-positive latency).
- */
-export function generateBatchProbePacScript(
-  candidates: Array<{ marker?: string; directive: string }>,
-  targetHost: string,
-  currentProfile?: Profile,
-  profiles: Record<string, Profile> = {}
-): string {
-  const block = candidates
-    .map(({ marker, directive }) => {
-      // Query-param marker: matches the real request URL regardless of path
-      // form or explicit port. User traffic never carries this param.
-      const urlTest = marker != null
-        ? ` && url.indexOf(${JSON.stringify(`__neo_probe=${marker}`)}) !== -1`
-        : '';
-      return `  if (host === ${JSON.stringify(targetHost.toLowerCase().replace(/^\[|\]$/g, ''))}${urlTest}) return ${JSON.stringify(directive)};`;
-    })
-    .join('\n');
+  const block = `  if (host === ${JSON.stringify(targetHost.toLowerCase().replace(/^\[|\]$/g, ''))}) return ${JSON.stringify(directive)};`;
 
   if (!currentProfile) {
     return `function FindProxyForURL(url, host) {\n${block}\n  return "DIRECT";\n}`;

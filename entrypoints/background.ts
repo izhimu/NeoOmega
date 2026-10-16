@@ -1,7 +1,8 @@
 import { fetchAndParseRuleList } from '../src/core/parsers/autoproxy';
 import { initAuthManager, setTempProxyCredentials, clearTempProxyCredentials } from '../src/core/proxy/auth-manager';
-import { generateTestPacScript, generateBatchProbePacScript, formatFixedChain, formatProxyDirective, resolveProfile } from '../src/core/pac/generator';
+import { generateTestPacScript, generateProbePacScript, formatFixedChain, resolveProfile } from '../src/core/pac/generator';
 import { matchSwitchProfileFull } from '../src/core/pac/matcher';
+import { resolveRouting } from '../src/core/routing';
 import { ProxyManager } from '../src/core/proxy/proxy-manager';
 import { getSettings, saveSettings, setActiveProfileId, adoptSyncSettings } from '../src/core/storage/storage';
 import type { AppSettings, FixedProfile, Profile, ProxyServer, RuleListConfig, SwitchProfile, SwitchRule, TabNetworkError, TabRequestLog } from '../src/core/types';
@@ -341,10 +342,9 @@ export default defineBackground(() => {
     }
   };
 
-  // Latency test for N proxies with ONE global proxy write: batch probe PAC +
-  // per-candidate URL path markers, parallel fetches (same scheme as the speed
-  // probe). Sequential TEST_PROXY would flip chrome.proxy.settings 2N times and
-  // recompile the full PAC N times — user traffic churns the whole run.
+  // Latency test for N proxies: sequential per-candidate host-only PAC writes
+  // (batch query-marker PAC was abandoned — Chrome strips HTTPS URL path+query
+  // before PAC evaluation, so markers never match for HTTPS targets).
   const executeBatchLatencyTest = async (
     proxies: ProxyServer[],
     testUrl?: string
@@ -364,31 +364,23 @@ export default defineBackground(() => {
     const settings = await getSettings();
     const activeProfile = settings.profiles[settings.activeProfileId];
 
-    const batchPac = generateBatchProbePacScript(
-      proxies.map((p, i) => ({ marker: String(i), directive: formatProxyDirective(p) })),
-      targetHost,
-      activeProfile,
-      settings.profiles
-    );
+    // Sequential per-candidate host-only PAC writes. Parallel batch with
+    // URL-query markers was abandoned: Chrome strips path+query of HTTPS
+    // URLs before PAC evaluation (PacHttpsUrlStrippingEnabled), so markers
+    // never match and every probe falls through to base routing.
     try {
-      await ProxyManager.setRawPac(batchPac);
-      const { promise: settlePromise, resolve: settleResolve } = Promise.withResolvers<void>();
-      setTimeout(settleResolve, 120);
-      await settlePromise;
-      const results = await Promise.all(proxies.map(async (p, i) => {
-        // ponytail: temp creds are a single global slot — two different
-        // authenticated proxies in one batch race (same ceiling as speed probe)
+      const results: Array<Record<string, unknown>> = [];
+      for (const p of proxies) {
+        await ProxyManager.setRawPac(generateTestPacScript(p, targetHost, activeProfile, settings.profiles));
+        const { promise: settlePromise, resolve: settleResolve } = Promise.withResolvers<void>();
+        setTimeout(settleResolve, 120); // ≥ old single-write settle: chrome.proxy.settings.set resolving doesn't guarantee the network service swapped PACs; stale PAC would misattribute latency to the previous candidate
+        await settlePromise;
         if (p.auth?.username) setTempProxyCredentials(p.host, p.port, p.auth);
         const start = performance.now();
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 8000);
         try {
-          // Marker rides the REAL testUrl path as a query param: the request
-          // hits the true origin path (a path-marker would let local proxy
-          // software answer instantly, measuring localhost instead of the
-          // proxy's RTT to the target). Any HTTP response proves delivery.
           const probeUrl = new URL(effectiveTestUrl);
-          probeUrl.searchParams.set('__neo_probe', String(i));
           probeUrl.searchParams.set('_t', String(Date.now()));
           const res = await fetch(probeUrl.toString(), {
             signal: controller.signal,
@@ -396,22 +388,22 @@ export default defineBackground(() => {
             redirect: 'manual',
           });
           try { await res.body?.cancel(); } catch {}
-          return {
+          results.push({
             success: true,
             latency: Math.round(performance.now() - start),
             status: res.status,
             statusText: res.statusText,
             testUrl: effectiveTestUrl,
             mode: 'latency',
-          };
+          });
         } catch (err) {
           let errMsg = err instanceof Error ? err.message : String(err);
           if (err instanceof Error && err.name === 'AbortError') errMsg = '连接超时 (Timeout)';
-          return { success: false, latency: Math.round(performance.now() - start), error: errMsg, testUrl: effectiveTestUrl, mode: 'latency' };
+          results.push({ success: false, latency: Math.round(performance.now() - start), error: errMsg, testUrl: effectiveTestUrl, mode: 'latency' });
         } finally {
           clearTimeout(timeoutId);
         }
-      }));
+      }
       // Sub-10ms success means the proxy answered locally without contacting
       // the target — surface it so bogus-fast readings are diagnosable.
       console.log('[NeoOmega] Latency test results:', results.map((r, i) => ({ proxy: `${proxies[i]?.host}:${proxies[i]?.port}`, latency: r.latency, status: r.status, error: r.error })));
@@ -486,13 +478,13 @@ export default defineBackground(() => {
   let requestLogOn = false;
   const mutedFailureHosts = new Set<string>();
   const analyzedHostsCache = new Map<string, number>();
+  // Latest settings snapshot for routing lookups (failure-toast proxy exclusion).
+  let cachedSettings: AppSettings | null = null;
 
-  // Fetch through one candidate of the already-installed batch probe PAC.
-  // The URL path marker selects the candidate; redirect:'manual' keeps the
-  // marker (a stripped redirect would silently re-route via normal rules).
+  // Fetch through the currently-installed per-candidate probe PAC (host-only
+  // match — the caller installs candidate i's PAC right before this call).
   const probeFetch = async (
     candidate: { id: string; name: string; directive: string; auth?: ProxyAuth },
-    marker: string,
     host: string
   ): Promise<number | null> => {
     if (speedProbeAbort?.signal.aborted || userTestRunning || ruleListFallbackRunning) return null;
@@ -513,8 +505,7 @@ export default defineBackground(() => {
         ? AbortSignal.any([controller.signal, speedProbeAbort.signal])
         : controller.signal;
       try {
-        // Root path + query marker: real origin request, not a short-circuitable path.
-        const res = await fetch(`${scheme}://${host}/?__neo_probe=${marker}&_t=${Date.now()}`, {
+        const res = await fetch(`${scheme}://${host}/?_t=${Date.now()}`, {
           method: 'GET',
           signal,
           cache: 'no-store',
@@ -590,24 +581,17 @@ export default defineBackground(() => {
     speedProbeAbort = abortController;
     const probeResults: Array<{ id: string; name: string; latency: number | null }> = [];
     try {
-      // One global write for the whole session: batch PAC, per-candidate URL markers.
-      const batchPac = generateBatchProbePacScript(
-        candidates.map((c, i) => ({ marker: String(i), directive: c.directive })),
-        target.host,
-        activeProfile,
-        settings.profiles
-      );
-      await ProxyManager.setRawPac(batchPac);
-      const { promise: settlePromise, resolve: settleResolve } = Promise.withResolvers<void>();
-      setTimeout(settleResolve, 120);
-      await settlePromise;
-      // Parallel: total probe time = slowest candidate, not the sum.
-      const results = await Promise.all(
-        candidates.map((cand, i) => probeFetch(cand, String(i), target.host))
-      );
-      for (let i = 0; i < candidates.length; i++) {
-        const cand = candidates[i]!;
-        probeResults.push({ id: cand.id, name: cand.name, latency: results[i]! });
+      // Sequential per-candidate host-only PAC writes. Parallel batch with
+      // URL-query markers was abandoned: Chrome strips path+query of HTTPS
+      // URLs before PAC evaluation (PacHttpsUrlStrippingEnabled), so markers
+      // never match and every probe falls through to base routing.
+      for (const cand of candidates) {
+        if (abortController.signal.aborted) break;
+        await ProxyManager.setRawPac(generateProbePacScript(cand.directive, target.host, activeProfile, settings.profiles));
+        const { promise: settlePromise, resolve: settleResolve } = Promise.withResolvers<void>();
+        setTimeout(settleResolve, 120); // ≥ old single-write settle: chrome.proxy.settings.set resolving doesn't guarantee the network service swapped PACs; stale PAC would misattribute latency to the previous candidate
+        await settlePromise;
+        probeResults.push({ id: cand.id, name: cand.name, latency: await probeFetch(cand, target.host) });
       }
     } finally {
       // A preempting user test / rule-list fallback owns the temp cred slot now.
@@ -691,8 +675,11 @@ export default defineBackground(() => {
   };
 
 
-  const notifyTabOfError = (tabId: number, host: string, count: number) => {
+  const notifyTabOfError = (tabId: number, url: string, host: string, count: number) => {
     if (tabId <= 0 || !errorTrackingOn || !failureNotificationOn || mutedFailureHosts.has(host) || typeof chrome === 'undefined' || !chrome.tabs?.sendMessage) return;
+    // Host already routed through a proxy profile: failure is the proxy's or
+    // the site's problem, a "switch to proxy" toast adds nothing.
+    if (cachedSettings && resolveRouting(cachedSettings, url, host) === 'proxy') return;
     chrome.tabs.sendMessage(
       tabId,
       {
@@ -704,8 +691,11 @@ export default defineBackground(() => {
     );
   };
 
-  // 5s hang detection: any request pending > 5s without headers = unreachable
-  const HANG_TIMEOUT_MS = 5000;
+  // 20s hang detection: any request pending > 20s without headers = unreachable.
+  // Sits just under Chrome's own TCP timeout (~21s+); when Chrome's native
+  // error arrives first, clearPending + per-host dedup in addTabError prevent
+  // double-reporting the same failure.
+  const HANG_TIMEOUT_MS = 20000;
   const pendingRequests = new Map<
     string,
     { tabId: number; host: string; url: string; timer?: TimeoutHandle; reported?: boolean }
@@ -749,7 +739,7 @@ export default defineBackground(() => {
       errors.push({ url, host, error, timestamp: Date.now() });
       if (errors.length > 50) errors.shift();
       tabErrors.set(tabId, errors);
-      notifyTabOfError(tabId, host, errors.length);
+      notifyTabOfError(tabId, url, host, errors.length);
       broadcastTab(tabId);
     }
   };
@@ -913,6 +903,7 @@ export default defineBackground(() => {
   syncWebRequestListeners();
   getSettings()
     .then((s) => {
+      cachedSettings = s;
       errorTrackingOn = !!s.enableErrorMonitoring;
       failureNotificationOn = s.enableFailureNotification ?? true;
       speedRecommendationOn = s.enableSpeedRecommendation ?? true;
@@ -927,6 +918,7 @@ export default defineBackground(() => {
     if (area !== 'local') return;
     const change = changes['neo_omega_settings'];
     if (!change) return;
+    cachedSettings = (change.newValue as AppSettings | undefined) ?? null;
     const oldMonitoring = errorTrackingOn;
     errorTrackingOn = !!(change.newValue as AppSettings | undefined)?.enableErrorMonitoring;
     failureNotificationOn = (change.newValue as AppSettings | undefined)?.enableFailureNotification ?? true;

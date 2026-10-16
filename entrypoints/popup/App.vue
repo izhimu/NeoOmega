@@ -4,9 +4,8 @@ import { Toaster, toast } from 'vue-sonner';
 import { Settings, Activity, ArrowUpRight, Globe } from '@lucide/vue';
 import { getSettings } from '../../src/core/storage/storage';
 import type { AppSettings, Profile, TabNetworkError } from '../../src/core/types';
-import { matchCondition } from '../../src/core/pac/matcher';
-import { parseRuleListCache } from '../../src/core/parsers/autoproxy';
 import { resolveProfile } from '../../src/core/pac/generator';
+import { resolveRouting, routingKindOf } from '../../src/core/routing';
 import { useI18n, resolveLocale } from '../../src/core/i18n';
 import { applyTheme, initThemeListener } from '../../src/core/theme';
 import UiButton from '../../src/components/ui/UiButton.vue';
@@ -47,15 +46,11 @@ const activeProfileLatency = computed(() => {
   return undefined;
 });
 
-type RoutingKind = 'direct' | 'proxy' | 'system';
+type RoutingKind = import('../../src/core/routing').RoutingKind;
 const verdictOf = (p: Profile | null | undefined): { kind: RoutingKind } => {
-  if (!p || p.profileType === 'DirectProfile') return { kind: 'direct' };
-  if (p.profileType === 'SystemProfile') return { kind: 'system' };
-  return { kind: 'proxy' };
+  return { kind: routingKindOf(p) };
 };
 
-// Mirrors generated PAC evaluation: profile rules in order, then rule list
-// (whitelist pass first, then proxy pass), then default profile.
 const routing = computed<{ kind: RoutingKind } | null>(() => {
   const s = settings.value;
   const active = activeProfile.value;
@@ -64,35 +59,8 @@ const routing = computed<{ kind: RoutingKind } | null>(() => {
   const url = currentTabUrl.value;
   const host = currentTabHost.value;
   if (!url || !host) return verdictOf(base);
-  if (base.profileType === 'FixedProfile') {
-    return base.bypassList?.some((c) => matchCondition(c, url, host)) ? { kind: 'direct' } : { kind: 'proxy' };
-  }
-  if (base.profileType === 'SwitchProfile') {
-    let matchedId: string | null = null;
-    for (const rule of base.rules) {
-      if (rule.enabled === false) continue;
-      if (matchCondition(rule.condition, url, host)) {
-        matchedId = rule.profileId;
-        break;
-      }
-    }
-    const rl = base.ruleList;
-    if (matchedId === null && rl?.enabled && rl.rulesCache?.length) {
-      const parsed = parseRuleListCache(rl.rulesCache, rl.matchProfileId, rl.defaultProfileId || base.defaultProfileId);
-      for (const wantWhitelist of [true, false]) {
-        for (const r of parsed) {
-          if ((r.profileId !== rl.matchProfileId) !== wantWhitelist) continue;
-          if (matchCondition(r.condition, url, host)) {
-            matchedId = r.profileId;
-            break;
-          }
-        }
-        if (matchedId !== null) break;
-      }
-    }
-    return verdictOf(resolveProfile(matchedId ?? base.defaultProfileId, s.profiles));
-  }
-  return verdictOf(base);
+  const kind = resolveRouting(s, url, host);
+  return kind === null ? null : { kind };
 });
 
 const loadLatencyCache = async () => {
