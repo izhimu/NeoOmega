@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.0.4 (2026-10-22)
+
+### Performance
+- Settings reads cached in-memory with `chrome.storage.onChanged` invalidation — background message handlers and popup/options/sidepanel open no longer deserialize the full settings blob (incl. GFWList rule cache) per call; duplicate reads on UI open eliminated.
+- PAC rule matching: compiled-regex cache (2000-entry cap), zero-allocation hostname suffix lookup in generated PAC, single-pass whitelist+proxy routing.
+- webRequest listeners now filtered to `main_frame`/`sub_frame` (error listener stays unfiltered) — subresource requests no longer wake the service worker.
+- Hang detection uses one shared 1s sweep timer instead of a timeout per request; latency-test candidates sorted by cached latency; base PAC generated once per batch and spliced per candidate.
+- Auth manager challenge sweep throttled; i18n lookups memoized per locale (incl. missing keys); content-script observer disconnects after final scan.
+
+### Fixed
+- Latency test and speed probe validate HTTP status (proxy 502/504 error pages no longer pass as "1ms"); sub-10ms readings rejected in recommendations; PAC settle verified via `proxy.settings.get` with one retry.
+- Failure toast: ad-blocker noise (`ERR_BLOCKED_BY_CLIENT/RESPONSE`, `ERR_ABORTED`) and tracker-type subresources (image/font/ping/beacon) no longer trigger toasts or enter tab error records; same-host toasts throttled to 10 min; hang tracking limited to main/sub frames.
+- Speed recommendations now require 2 distinct slow resources per host (was 1) and probe the original request path instead of `/`.
+- Options rule-list update interval input was untypeable (debounced write fought UiInput force-resync).
+- Sidepanel "rule added" toast showed a `*.host` pattern while the actual rule was bare `host`.
+- Latency badges older than 5 min no longer render as fresh; green threshold unified to 250ms across popup/options.
+- Storage: `getSettings` returns a private clone (unsaved mutations can no longer leak into the cache); concurrent first-read no longer overwrites newer cached settings.
+
+### Changed
+- Failure notifications and speed recommendations are now **opt-in** (default off for new installs and previously-unset keys).
+
 ## 1.0.3 (2026-10-16)
 
 ### Fixed
