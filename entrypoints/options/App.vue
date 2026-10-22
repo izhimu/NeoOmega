@@ -163,7 +163,9 @@ watch(rulesPageCount, (n) => { if (rulesPage.value > n) rulesPage.value = n; });
 
 const loadSettings = async () => {
   unmutedHosts.clear(); // unmute set is session-scoped; fresh state resets it
-  settings.value = await getSettings();
+  const stashed = globalThis.__neoOmegaInitialSettings;
+  delete globalThis.__neoOmegaInitialSettings;
+  settings.value = stashed ?? (await getSettings());
   savedSnapshot = JSON.stringify(settings.value);
   applyTheme(settings.value.theme);
   setLocale(resolveLocale(settings.value.language));
@@ -280,12 +282,12 @@ const unmuteFailureHost = async (host: string) => {
 };
 
 const debounceSaveRuleListInterval = (val: string | number) => {
+  if (!settings.value) return;
+  // Write immediately so UiInput's modelValue stays in sync (keystrokes don't revert);
+  // debounce only the save.
+  settings.value.ruleListUpdateInterval = Math.max(15, Number(val) || 120);
   if (saveRuleListIntervalTimer) clearTimeout(saveRuleListIntervalTimer);
-  saveRuleListIntervalTimer = setTimeout(() => {
-    if (!settings.value) return;
-    settings.value.ruleListUpdateInterval = Math.max(15, Number(val) || 120);
-    saveCurrentSettings();
-  }, 500);
+  saveRuleListIntervalTimer = setTimeout(() => saveCurrentSettings(), 500);
 };
 
 const changeLanguage = async (lang: 'auto' | 'zh_CN' | 'en') => {
@@ -492,7 +494,15 @@ const updateRuleListNow = async (profileId: string) => {
 const showRuleListModal = ref(false);
 const showMutedHostsModal = ref(false);
 const ruleListSearchQuery = ref('');
+const debouncedRuleListSearchQuery = ref('');
 const ruleListDisplayLimit = ref(200);
+
+watch(ruleListSearchQuery, (value, _previous, onCleanup) => {
+  const timer = setTimeout(() => {
+    debouncedRuleListSearchQuery.value = value;
+  }, 150);
+  onCleanup(() => clearTimeout(timer));
+});
 
 const currentRuleListLines = computed(() => {
   if (!switchProfile.value?.ruleList?.rulesCache) return [];
@@ -502,13 +512,14 @@ const currentRuleListLines = computed(() => {
 });
 
 const filteredRuleListLines = computed(() => {
-  const query = ruleListSearchQuery.value.trim().toLowerCase();
+  const query = debouncedRuleListSearchQuery.value.trim().toLowerCase();
   if (!query) return currentRuleListLines.value;
   return currentRuleListLines.value.filter(line => line.toLowerCase().includes(query));
 });
 
 const openRuleListModal = () => {
   ruleListSearchQuery.value = '';
+  debouncedRuleListSearchQuery.value = '';
   ruleListDisplayLimit.value = 200;
   showRuleListModal.value = true;
 };
@@ -565,9 +576,17 @@ const bandwidthTargetOptions = computed(() => [
   { value: 'https://speed.cloudflare.com/__down?bytes=25000000', label: 'Cloudflare 25 MB' },
 ]);
 
+const LATENCY_CACHE_TTL = 5 * 60 * 1000;
+
+// Render-time staleness filter: cache entries older than TTL render as absent.
+const freshSpeedTest = (id: string): SpeedTestResult | null => {
+  const r = speedTestResults.value[id];
+  return r && Date.now() - (r.timestamp || 0) < LATENCY_CACHE_TTL ? r : null;
+};
+
 const currentProfileSpeedTest = computed(() => {
   if (!fixedProfile.value) return null;
-  return speedTestResults.value[fixedProfile.value.id] || null;
+  return freshSpeedTest(fixedProfile.value.id);
 });
 
 const runSpeedTest = async (mode: 'latency' | 'bandwidth' = 'latency') => {
@@ -936,7 +955,7 @@ onUnmounted(() => {
             :style="{ backgroundColor: settings.profiles[id]?.color || '#94a3b8', boxShadow: `0 0 6px ${settings.profiles[id]?.color || '#94a3b8'}80` }"
           />
           <span class="flex-1 text-xs truncate leading-normal">{{ getProfileDisplayName(settings.profiles[id]) || id }}</span>
-          <LatencyBadge :result="speedTestResults[id]" size="sm" />
+          <LatencyBadge :result="freshSpeedTest(id)" size="sm" />
           <button
             v-if="settings.activeProfileId !== id"
             type="button"
@@ -2000,7 +2019,7 @@ onUnmounted(() => {
           </div>
           <div class="flex items-center gap-2 justify-between sm:justify-end">
             <span class="text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">
-              {{ ruleListSearchQuery ? t('options.filteredRulesCount').replace('{count}', String(filteredRuleListLines.length)) : t('options.totalRulesCount').replace('{count}', String(currentRuleListLines.length)) }}
+              {{ debouncedRuleListSearchQuery ? t('options.filteredRulesCount').replace('{count}', String(filteredRuleListLines.length)) : t('options.totalRulesCount').replace('{count}', String(currentRuleListLines.length)) }}
             </span>
             <UiButton
               variant="outline"
@@ -2022,7 +2041,7 @@ onUnmounted(() => {
           <div v-else class="space-y-0.5">
             <div
               v-for="(line, idx) in filteredRuleListLines.slice(0, ruleListDisplayLimit)"
-              :key="idx"
+              :key="`${line}:${idx}`"
               class="flex items-start gap-3 py-0.5 hover:bg-slate-800/60 px-1.5 rounded"
             >
               <span class="text-slate-500 select-none w-12 text-right shrink-0">{{ idx + 1 }}</span>

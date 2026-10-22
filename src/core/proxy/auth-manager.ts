@@ -98,6 +98,7 @@ interface ChallengeState {
 // (Chrome opens ~6 sockets on page load) and locks out valid auth for 60s.
 const challengeTracker = new Map<string, ChallengeState>();
 const blockedProxies = new Map<string, number>(); // host:port -> blockedUntil
+let nextSweep = 0; // throttle for stale-entry sweeps
 
 export function isChallengeLooping(host: string, port: number, requestId: string, now = Date.now()): boolean {
   const proxyKey = `${normHost(host)}:${port}`;
@@ -118,8 +119,11 @@ export function isChallengeLooping(host: string, port: number, requestId: string
       return true;
     }
   }
-  // ponytail: requestIds get no completion event — sweep stale entries, bounded map
-  if (challengeTracker.size > 500) {
+  // ponytail: requestIds get no completion event — sweep stale entries, bounded map.
+  // nextSweep throttles the full-map scan to once per 5s; otherwise with 500+
+  // fresh ids every auth challenge scanned all entries.
+  if (challengeTracker.size > 500 && now >= nextSweep) {
+    nextSweep = now + 5_000;
     for (const [id, s] of challengeTracker) {
       if (now - s.firstTime > 60_000) challengeTracker.delete(id);
     }
@@ -129,6 +133,7 @@ export function isChallengeLooping(host: string, port: number, requestId: string
 
 export function resetChallengeTracker(): void {
   challengeTracker.clear();
+  nextSweep = 0;
   blockedProxies.clear();
 }
 /**

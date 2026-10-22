@@ -681,16 +681,28 @@ export default defineContentScript({
       h.endsWith('.internal') ||
       h.endsWith('.lan');
 
+    const slowCounts = new Map<string, number>();
+    const seenSlowEntries = new Set<string>();
     const reportedSlowHosts = new Set<string>();
     const THRESHOLD = 3000;
 
-    const reportSlowHost = (h: string, dur: number, protocol = window.location.protocol) => {
+    const reportSlowHost = (h: string, dur: number, protocol = window.location.protocol, path = '/', entryKey = '') => {
       if (isExcluded(h) || reportedSlowHosts.has(h)) return;
+      // Same entry arrives via buffered observer AND timed rescans; count distinct entries only.
+      if (entryKey) {
+        if (seenSlowEntries.has(entryKey)) return;
+        seenSlowEntries.add(entryKey);
+      }
+      // ponytail: 2 slow entries required to avoid one-off spikes; count map lives per page load
+      const count = (slowCounts.get(h) || 0) + 1;
+      slowCounts.set(h, count);
+      if (count < 2) return;
       reportedSlowHosts.add(h);
       console.log('[NeoOmega] Detected slow host:', h, `${dur}ms`);
       safeSendMessage({
         type: 'ANALYZE_SLOW_HOSTS',
         protocol,
+        path,
         hosts: [{ host: h, duration: dur, protocol }],
         url: window.location.href,
       });
@@ -705,7 +717,7 @@ export default defineContentScript({
           if (!nav) return;
           const dur = nav.duration || (nav.responseEnd - nav.startTime);
           if (dur > THRESHOLD && window.location.hostname) {
-            reportSlowHost(window.location.hostname, Math.round(dur), window.location.protocol);
+            reportSlowHost(window.location.hostname, Math.round(dur), window.location.protocol, window.location.pathname, 'nav');
           }
         }
       } catch {}
@@ -718,7 +730,7 @@ export default defineContentScript({
             try {
               const u = new URL(r.name);
               if (u.protocol === 'http:' || u.protocol === 'https:') {
-                reportSlowHost(u.hostname, Math.round(dur), u.protocol);
+                reportSlowHost(u.hostname, Math.round(dur), u.protocol, u.pathname, r.name + ':' + r.startTime);
               }
             } catch {}
           }
@@ -726,11 +738,12 @@ export default defineContentScript({
       } catch {}
     };
 
+    let observer: PerformanceObserver | null = null;
     try {
       if (typeof PerformanceObserver !== 'undefined') {
-        const observer = new PerformanceObserver((list) => {
+        observer = new PerformanceObserver((list) => {
           if (!isContextValid()) {
-            observer.disconnect();
+            observer?.disconnect();
             return;
           }
           for (const entry of list.getEntries()) {
@@ -739,7 +752,7 @@ export default defineContentScript({
               try {
                 const u = new URL(entry.name);
                 if (u.protocol === 'http:' || u.protocol === 'https:') {
-                  reportSlowHost(u.hostname, Math.round(dur), u.protocol);
+                  reportSlowHost(u.hostname, Math.round(dur), u.protocol, u.pathname, entry.name + ':' + entry.startTime);
                 }
               } catch {}
             }
@@ -749,9 +762,11 @@ export default defineContentScript({
       }
     } catch {}
 
-    scanExistingTimings();
     window.setTimeout(scanExistingTimings, 1500);
-    window.setTimeout(scanExistingTimings, 4000);
+    window.setTimeout(() => {
+      scanExistingTimings();
+      observer?.disconnect();
+    }, 4000);
 
     // Listen for real-time error notifications from background
     chrome.runtime.onMessage.addListener((message) => {

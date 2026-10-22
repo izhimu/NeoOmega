@@ -125,9 +125,9 @@ export interface AppSettings {
   theme: 'auto' | 'light' | 'dark';
   language?: 'auto' | 'zh_CN' | 'en';
   enableErrorMonitoring: boolean;
-  enableFailureNotification?: boolean; // Show in-page toast for failed resources, default true
+  enableFailureNotification?: boolean; // Show in-page toast for failed resources, default false
   mutedFailureHosts?: string[]; // hosts excluded from the in-page failure toast
-  enableSpeedRecommendation?: boolean; // Show speedup suggestions for slow hosts, default true
+  enableSpeedRecommendation?: boolean; // Show speedup suggestions for slow hosts, default false
   ruleListUpdateInterval?: number; // minutes, default 120
   enableCloudSync?: boolean; // mirror profiles into chrome.storage.sync
   webRtcMode?: WebRtcMode; // chrome.privacy IP handling policy, default 'default'
@@ -160,3 +160,11 @@ export interface TabRequestLog {
   error?: string;
   timestamp: number;
 }
+
+declare global {
+  // Stashed by entry main.ts to avoid a duplicate getSettings() on page open.
+  // eslint-disable-next-line no-var
+  var __neoOmegaInitialSettings: AppSettings | undefined;
+}
+
+export {};

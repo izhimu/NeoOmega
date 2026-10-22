@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, toRaw } from 'vue';
 import { Toaster, toast } from 'vue-sonner';
 import { Settings, Activity, ArrowUpRight, Globe } from '@lucide/vue';
 import { getSettings } from '../../src/core/storage/storage';
@@ -37,11 +37,20 @@ const activeProfile = computed(() => {
   return settings.value.profiles[settings.value.activeProfileId] || null;
 });
 
+const LATENCY_CACHE_TTL = 5 * 60 * 1000;
+
+// Render-time staleness filter: cache entries older than TTL render as absent.
+const freshLatency = (id: string): LatencyItem | undefined => {
+  const item = latencies.value[id];
+  return item && Date.now() - item.timestamp < LATENCY_CACHE_TTL ? item : undefined;
+};
+
 const activeProfileLatency = computed(() => {
   const p = activeProfile.value;
   if (!p) return undefined;
   if (p.profileType === 'FixedProfile') {
-    return latencies.value[p.id]?.success ? latencies.value[p.id]?.latency : undefined;
+    const item = freshLatency(p.id);
+    return item?.success ? item.latency : undefined;
   }
   return undefined;
 });
@@ -75,24 +84,17 @@ const loadLatencyCache = async () => {
 const testFixedProfiles = async (force = false) => {
   if (!settings.value?.profiles) return;
   const now = Date.now();
-  const CACHE_TTL = 60 * 1000;
 
-  // Collect stale profiles, then ONE batch message: background probes all
-  // candidates in parallel through a single PAC write. Per-proxy TEST_PROXY
-  // would flip global chrome.proxy.settings 2N times mid-browse.
-  const pending: Array<{ id: string; proxy: unknown }> = [];
-  for (const id of settings.value.order || []) {
-    const profile = settings.value?.profiles?.[id];
-    if (profile?.profileType === 'FixedProfile' && (profile as any).fallbackProxy?.host && (profile as any).fallbackProxy?.port) {
-      const cached = latencies.value[id];
-      if (!force && cached && (now - cached.timestamp < CACHE_TTL)) {
-        continue;
-      }
-      testingIds.value[id] = true;
-      pending.push({ id, proxy: JSON.parse(JSON.stringify((profile as any).fallbackProxy)) });
-    }
-  }
-  if (pending.length === 0) return;
+  // Probe only the active profile on open; other profiles use their retest button.
+  const id = settings.value.activeProfileId;
+  const profile = settings.value.profiles[id];
+  if (profile?.profileType !== 'FixedProfile' || !profile.fallbackProxy?.host || !profile.fallbackProxy.port) return;
+  const cached = latencies.value[id];
+  if (!force && cached && now - cached.timestamp < LATENCY_CACHE_TTL) return;
+
+  testingIds.value[id] = true;
+  const pending = [{ id, proxy: toRaw(profile).fallbackProxy }];
+  let cacheChanged = false;
 
   try {
     await new Promise<void>((resolve) => {
@@ -103,15 +105,20 @@ const testFixedProfiles = async (force = false) => {
           if (chrome.runtime.lastError) {
             for (const { id } of pending) {
               latencies.value[id] = { success: false, error: chrome.runtime.lastError.message, timestamp: Date.now() };
+              cacheChanged = true;
             }
           } else if (res?.success && Array.isArray(res.results)) {
             pending.forEach(({ id }, i) => {
               const r = res.results[i];
-              if (r) latencies.value[id] = { ...r, timestamp: Date.now() };
+              if (r) {
+                latencies.value[id] = { ...r, timestamp: Date.now() };
+                cacheChanged = true;
+              }
             });
           } else {
             for (const { id } of pending) {
               latencies.value[id] = { success: false, error: res?.error || 'ERR', timestamp: Date.now() };
+              cacheChanged = true;
             }
           }
           resolve();
@@ -122,28 +129,30 @@ const testFixedProfiles = async (force = false) => {
     for (const { id } of pending) testingIds.value[id] = false;
   }
 
-  if (typeof chrome !== 'undefined' && chrome.storage?.local) {
-    // Strip Vue reactivity before chrome.storage (structured-clone hazard)
-    await chrome.storage.local.set({ neo_omega_latency_cache: JSON.parse(JSON.stringify(latencies.value)) });
+  if (cacheChanged && typeof chrome !== 'undefined' && chrome.storage?.local) {
+    await chrome.storage.local.set({ neo_omega_latency_cache: toRaw(latencies.value) });
   }
 };
 
 const retestProfile = async (id: string) => {
   const profile = settings.value?.profiles[id];
-  if (!profile || profile.profileType !== 'FixedProfile' || !(profile as any).fallbackProxy?.host) return;
+  if (!profile || profile.profileType !== 'FixedProfile' || !profile.fallbackProxy?.host) return;
   testingIds.value[id] = true;
-  const proxyPayload = JSON.parse(JSON.stringify((profile as any).fallbackProxy));
+  const proxyPayload = toRaw(profile).fallbackProxy;
   chrome.runtime.sendMessage(
     { type: 'TEST_PROXY', proxy: proxyPayload, testUrl: 'https://www.google.com/generate_204' },
     async (res) => {
       testingIds.value[id] = false;
+      let cacheChanged = false;
       if (chrome.runtime.lastError) {
         latencies.value[id] = { success: false, error: chrome.runtime.lastError.message, timestamp: Date.now() };
+        cacheChanged = true;
       } else if (res) {
         latencies.value[id] = { ...res, timestamp: Date.now() };
+        cacheChanged = true;
       }
-      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
-        await chrome.storage.local.set({ neo_omega_latency_cache: JSON.parse(JSON.stringify(latencies.value)) });
+      if (cacheChanged && typeof chrome !== 'undefined' && chrome.storage?.local) {
+        await chrome.storage.local.set({ neo_omega_latency_cache: toRaw(latencies.value) });
       }
     }
   );
@@ -164,7 +173,9 @@ const getLatencyClass = (item?: LatencyItem) => {
 
 const loadState = async () => {
   try {
-    settings.value = await getSettings();
+    const stashed = globalThis.__neoOmegaInitialSettings;
+    delete globalThis.__neoOmegaInitialSettings;
+    settings.value = stashed ?? (await getSettings());
     applyTheme(settings.value?.theme);
     setLocale(resolveLocale(settings.value?.language));
 
@@ -415,13 +426,13 @@ onUnmounted(() => {
               ...
             </span>
             <span
-              v-else-if="latencies[id]"
+              v-else-if="freshLatency(id)"
               class="text-[9px] font-mono px-1.5 py-0.5 rounded-full border leading-none font-medium cursor-pointer transition-transform hover:scale-105 select-none"
-              :class="getLatencyClass(latencies[id])"
-              :title="latencies[id].success ? `${latencies[id].latency}ms (${t('popup.clickToRetest')})` : (latencies[id].error || t('common.timeout'))"
+              :class="getLatencyClass(freshLatency(id))"
+              :title="freshLatency(id)!.success ? `${freshLatency(id)!.latency}ms (${t('popup.clickToRetest')})` : (freshLatency(id)!.error || t('common.timeout'))"
               @click.stop="retestProfile(id)"
             >
-              {{ latencies[id].success ? `${latencies[id].latency}ms` : 'ERR' }}
+              {{ freshLatency(id)!.success ? `${freshLatency(id)!.latency}ms` : 'ERR' }}
             </span>
           </template>
 

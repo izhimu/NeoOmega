@@ -95,7 +95,7 @@ export function generateFixedPacScript(profile: FixedProfile): string {
   const lines: string[] = [
     'function FindProxyForURL(url, host) {',
     '  "use strict";',
-    '  host = host.replace(/\\.$/, "");', // FQDN trailing root dot
+    '  if (host.charCodeAt(host.length - 1) === 46) host = host.substring(0, host.length - 1);', // FQDN trailing root dot
   ];
 
   // 1. Bypass rules
@@ -159,7 +159,7 @@ export function generateSwitchPacScript(
   const lines: string[] = [
     'function FindProxyForURL(url, host) {',
     '  "use strict";',
-    '  host = host.replace(/\\.$/, "");', // FQDN trailing root dot
+    '  if (host.charCodeAt(host.length - 1) === 46) host = host.substring(0, host.length - 1);', // FQDN trailing root dot
   ];
 
   // Evaluate each switch rule in sequence
@@ -216,10 +216,14 @@ export function generateSwitchPacScript(
       // Top scope: built once per script eval, not per request. SUFFIX_RE's
       // [A-Za-z0-9.-] charset keeps __proto__ out, plain literal is safe.
       topLevel.push(`var hostRules = Object.assign(Object.create(null), {${entries}});`);
-      lines.push('  var hostParts = host.toLowerCase().split(".");');
-      lines.push('  for (var i = 0; i < hostParts.length; i++) {');
-      lines.push('    var hit = hostRules[hostParts.slice(i).join(".")];');
-      lines.push('    if (hit) return hit;');
+      // Allocation-free suffix walk: check full host, then each post-dot
+      // substring — same set as split(".").slice(i).join(".") with no arrays.
+      lines.push('  var __lh = host.toLowerCase();');
+      lines.push('  for (var i = 0; i <= __lh.length; i++) {');
+      lines.push('    if (i === 0 || __lh.charCodeAt(i - 1) === 46) {');
+      lines.push('      var hit = hostRules[__lh.substring(i)];');
+      lines.push('      if (hit) return hit;');
+      lines.push('    }');
       lines.push('  }');
     }
     lines.push(...proxyLines);
@@ -294,7 +298,7 @@ export function generateProbePacScript(
   // after the function header would push "use strict" out of the prologue
   // (sloppy mode) and compare against the un-normalized host.
   const needle = 'function FindProxyForURL(url, host) {';
-  const anchors = ['  host = host.replace(/\\.$/, "");', '  "use strict";', needle];
+  const anchors = ['  if (host.charCodeAt(host.length - 1) === 46) host = host.substring(0, host.length - 1);', '  "use strict";', needle];
   for (const anchor of anchors) {
     const idx = baseScript.indexOf(anchor);
     if (idx !== -1) {

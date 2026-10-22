@@ -164,8 +164,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'auto',
   language: 'auto',
   enableErrorMonitoring: true,
-  enableFailureNotification: true,
-  enableSpeedRecommendation: true,
+  enableFailureNotification: false,
+  enableSpeedRecommendation: false,
   ruleListUpdateInterval: 120,
   enableCloudSync: false,
   webRtcMode: 'default',
@@ -174,11 +174,29 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
 const STORAGE_KEY = 'neo_omega_settings';
 
+// Module-level cache of parsed settings. Only enabled when chrome.storage.onChanged
+// exists (real extension context); test mocks lack it and get per-call reads.
+let settingsCache: AppSettings | null = null;
+const cacheEnabled = typeof chrome !== 'undefined' && !!chrome.storage?.onChanged;
+if (cacheEnabled) {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !(STORAGE_KEY in changes)) return;
+    const v = changes[STORAGE_KEY].newValue as AppSettings | undefined;
+    settingsCache = v?.profiles ? normalizeSettings(v) : null;
+  });
+}
+
 export async function getSettings(): Promise<AppSettings> {
   if (typeof chrome === 'undefined' || !chrome.storage?.local) {
     return structuredClone(DEFAULT_SETTINGS);
   }
+  // Callers get a private clone; mutate it freely and pass it to saveSettings.
+  // The cache itself is never exposed, so failed saves leave no dirty state.
+  if (settingsCache) return structuredClone(settingsCache);
   const result = await chrome.storage.local.get(STORAGE_KEY);
+  // In-flight race: a concurrent save/onChanged may have populated the cache
+  // while we awaited; keep the newer cache instead of overwriting it.
+  if (settingsCache) return structuredClone(settingsCache);
   let rawSettings = result[STORAGE_KEY];
   let adoptedFresh = false;
   if (!rawSettings) {
@@ -208,6 +226,11 @@ export async function getSettings(): Promise<AppSettings> {
   const settings = normalizeSettings(rawSettings as AppSettings);
   if (adoptedFresh) {
     await saveSettings(settings);
+    return settings;
+  }
+  if (cacheEnabled) {
+    settingsCache = settings;
+    return structuredClone(settings);
   }
   return settings;
 }
@@ -216,9 +239,11 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
   if (typeof chrome === 'undefined' || !chrome.storage?.local) {
     return;
   }
+  // Clone to detach Vue reactivity before persisting; callers never hold the cache object.
   const plain = JSON.parse(JSON.stringify(settings)) as AppSettings;
   plain.settingsUpdatedAt = Date.now();
   await chrome.storage.local.set({ [STORAGE_KEY]: plain });
+  if (cacheEnabled) settingsCache = plain;
   void pushSettingsToSync(plain);
 }
 
@@ -391,6 +416,7 @@ export async function adoptSyncSettings(): Promise<boolean> {
 
   normalizeSettings(remote);
   await chrome.storage.local.set({ [STORAGE_KEY]: remote });
+  if (cacheEnabled) settingsCache = remote;
   return true;
 }
 

@@ -36,15 +36,13 @@ export function resolveRouting(s: AppSettings, url: string, host: string): Routi
     const rl = base.ruleList;
     if (matchedId === null && rl?.enabled && rl.rulesCache?.length) {
       const parsed = parseRuleListCache(rl.rulesCache, rl.matchProfileId, rl.defaultProfileId || base.defaultProfileId);
-      for (const wantWhitelist of [true, false]) {
-        for (const r of parsed) {
-          if ((r.profileId !== rl.matchProfileId) !== wantWhitelist) continue;
-          if (matchCondition(r.condition, url, host)) {
-            matchedId = r.profileId;
-            break;
-          }
+      // parseRuleListCache returns whitelist rules first, so one ordered scan
+      // matches the old whitelist-pass-then-proxy-pass semantics.
+      for (const r of parsed) {
+        if (matchCondition(r.condition, url, host)) {
+          matchedId = r.profileId;
+          break;
         }
-        if (matchedId !== null) break;
       }
     }
     return routingKindOf(resolveProfile(matchedId ?? base.defaultProfileId, s.profiles));

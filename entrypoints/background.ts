@@ -1,6 +1,6 @@
 import { fetchAndParseRuleList } from '../src/core/parsers/autoproxy';
 import { initAuthManager, setTempProxyCredentials, clearTempProxyCredentials } from '../src/core/proxy/auth-manager';
-import { generateTestPacScript, generateProbePacScript, formatFixedChain, resolveProfile } from '../src/core/pac/generator';
+import { generatePacScript, generateTestPacScript, formatProxyDirective, formatFixedChain, resolveProfile } from '../src/core/pac/generator';
 import { matchSwitchProfileFull } from '../src/core/pac/matcher';
 import { resolveRouting } from '../src/core/routing';
 import { ProxyManager } from '../src/core/proxy/proxy-manager';
@@ -9,7 +9,41 @@ import type { AppSettings, FixedProfile, Profile, ProxyServer, RuleListConfig, S
 
 type ProxyAuth = { username?: string; password?: string };
 
+// ponytail: duplicates generator.ts's probe-block splice so a whole probe batch
+// can share one generated base PAC; upgrade path = generator exposes a
+// base+block API (generator.ts owned elsewhere).
+const spliceProbeBlock = (baseScript: string | null, directive: string, targetHost: string): string => {
+  const block = `  if (host === ${JSON.stringify(targetHost.toLowerCase().replace(/^\[|\]$/g, ''))}) return ${JSON.stringify(directive)};`;
+  // Insert after the directive prologue + host normalization (see generator.ts).
+  const anchors = ['  if (host.charCodeAt(host.length - 1) === 46) host = host.substring(0, host.length - 1);', '  "use strict";', 'function FindProxyForURL(url, host) {'];
+  if (baseScript) {
+    for (const anchor of anchors) {
+      const idx = baseScript.indexOf(anchor);
+      if (idx !== -1) {
+        const insertPos = idx + anchor.length;
+        return baseScript.slice(0, insertPos) + `\n${block}` + baseScript.slice(insertPos);
+      }
+    }
+  }
+  return `function FindProxyForURL(url, host) {\n${block}\n  return "DIRECT";\n}`;
+};
+
 type TimeoutHandle = ReturnType<typeof setTimeout>;
+
+const lastToastAt = new Map<string, number>();
+const failureAlertTypes: Record<string, true> = {
+  main_frame: true,
+  sub_frame: true,
+  script: true,
+  stylesheet: true,
+  xmlhttprequest: true,
+  font: true,
+};
+const benignFailureErrors: Record<string, true> = {
+  'net::ERR_ABORTED': true,
+  'net::ERR_BLOCKED_BY_CLIENT': true,
+  'net::ERR_BLOCKED_BY_RESPONSE': true,
+};
 
 export default defineBackground(() => {
   initAuthManager();
@@ -41,9 +75,11 @@ export default defineBackground(() => {
     await init();
   });
 
+  // One shared startup read: alarm setup + listener gating both consume it.
+  const startupSettingsPromise = getSettings();
   // Setup periodic rule list update alarm (every 2 hours)
   if (chrome.alarms) {
-    getSettings().then((s) => {
+    startupSettingsPromise.then((s) => {
       const period = Math.max(15, s.ruleListUpdateInterval ?? 120);
       // create() with an existing name resets the schedule; SW cold-starts are
       // frequent (webRequest wakes), which would postpone the alarm forever.
@@ -52,7 +88,7 @@ export default defineBackground(() => {
           chrome.alarms.create('neo_omega_update_rules', { periodInMinutes: period });
         }
       });
-    });
+    }).catch(() => {});
     chrome.alarms.onAlarm.addListener(async (alarm) => {
       if (alarm.name === 'neo_omega_update_rules') {
         await updateAllRuleLists();
@@ -342,6 +378,17 @@ export default defineBackground(() => {
     }
   };
 
+  const settleProbePac = async (expectedPac: string): Promise<boolean> => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const { promise: settlePromise, resolve: settleResolve } = Promise.withResolvers<void>();
+      setTimeout(settleResolve, 120); // ≥ old single-write settle: chrome.proxy.settings.set resolving doesn't guarantee the network service swapped PACs; stale PAC would misattribute latency to the previous candidate
+      await settlePromise;
+      const current = await chrome.proxy.settings.get({});
+      if (current.value.pacScript?.data === expectedPac) return true;
+    }
+    return false;
+  };
+
   // Latency test for N proxies: sequential per-candidate host-only PAC writes
   // (batch query-marker PAC was abandoned — Chrome strips HTTPS URL path+query
   // before PAC evaluation, so markers never match for HTTPS targets).
@@ -363,6 +410,8 @@ export default defineBackground(() => {
     const targetHost = parsedUrl.hostname;
     const settings = await getSettings();
     const activeProfile = settings.profiles[settings.activeProfileId];
+    // Base PAC generated once for the whole batch; only the host block differs per candidate.
+    const basePac = activeProfile ? generatePacScript(activeProfile, settings.profiles) : null;
 
     // Sequential per-candidate host-only PAC writes. Parallel batch with
     // URL-query markers was abandoned: Chrome strips path+query of HTTPS
@@ -371,10 +420,12 @@ export default defineBackground(() => {
     try {
       const results: Array<Record<string, unknown>> = [];
       for (const p of proxies) {
-        await ProxyManager.setRawPac(generateTestPacScript(p, targetHost, activeProfile, settings.profiles));
-        const { promise: settlePromise, resolve: settleResolve } = Promise.withResolvers<void>();
-        setTimeout(settleResolve, 120); // ≥ old single-write settle: chrome.proxy.settings.set resolving doesn't guarantee the network service swapped PACs; stale PAC would misattribute latency to the previous candidate
-        await settlePromise;
+        const probePac = spliceProbeBlock(basePac, formatProxyDirective(p), targetHost);
+        await ProxyManager.setRawPac(probePac);
+        if (!(await settleProbePac(probePac))) {
+          results.push({ success: false, latency: 0, error: 'PAC not applied', testUrl: effectiveTestUrl, mode: 'latency' });
+          continue;
+        }
         if (p.auth?.username) setTempProxyCredentials(p.host, p.port, p.auth);
         const start = performance.now();
         const controller = new AbortController();
@@ -388,8 +439,10 @@ export default defineBackground(() => {
             redirect: 'manual',
           });
           try { await res.body?.cancel(); } catch {}
+          const failed = res.status >= 400;
           results.push({
-            success: true,
+            success: !failed,
+            ...(failed ? { error: `HTTP ${res.status}` } : {}),
             latency: Math.round(performance.now() - start),
             status: res.status,
             statusText: res.statusText,
@@ -485,7 +538,8 @@ export default defineBackground(() => {
   // match — the caller installs candidate i's PAC right before this call).
   const probeFetch = async (
     candidate: { id: string; name: string; directive: string; auth?: ProxyAuth },
-    host: string
+    host: string,
+    path = '/'
   ): Promise<number | null> => {
     if (speedProbeAbort?.signal.aborted || userTestRunning || ruleListFallbackRunning) return null;
     if (candidate.auth?.username) {
@@ -505,13 +559,15 @@ export default defineBackground(() => {
         ? AbortSignal.any([controller.signal, speedProbeAbort.signal])
         : controller.signal;
       try {
-        const res = await fetch(`${scheme}://${host}/?_t=${Date.now()}`, {
+        const res = await fetch(`${scheme}://${host}${path}?_t=${Date.now()}`, {
           method: 'GET',
           signal,
           cache: 'no-store',
           redirect: 'manual',
         });
         try { await res.body?.cancel(); } catch {}
+        // Only 502/503/504 are proxy error pages; 401/403/404 mean the host answered.
+        if (res.status === 502 || res.status === 503 || res.status === 504) throw new Error(`HTTP ${res.status}`);
         return Math.round(performance.now() - start);
       } finally {
         clearTimeout(timer);
@@ -532,10 +588,15 @@ export default defineBackground(() => {
   const analyzeSlowHosts = async (
     hosts: Array<{ host: string; duration: number; protocol?: string }>,
     tabId?: number,
-    protocol?: string
+    protocol?: string,
+    path = '/'
   ) => {
     if (!speedRecommendationOn || userTestRunning || speedProbeRunning || ruleListFallbackRunning || !hosts.length || !tabId) return;
-    const settings = await getSettings();
+    // Cooldown + mute checks first: cheap, and avoids a settings read per slow-host message.
+    const now = Date.now();
+    const target = hosts.find((h) => !mutedFailureHosts.has(h.host) && now - (analyzedHostsCache.get(h.host) || 0) > 300000);
+    if (!target) return;
+    const settings = cachedSettings ?? (await getSettings());
     if (userTestRunning || speedProbeRunning || ruleListFallbackRunning) return;
     const activeProfile = settings.profiles[settings.activeProfileId];
     if (!activeProfile || activeProfile.profileType !== 'SwitchProfile') return;
@@ -546,9 +607,18 @@ export default defineBackground(() => {
         !!(p.fallbackProxy?.host || p.proxyForHttps?.host || p.proxyForHttp?.host)
     );
     if (fixedCandidates.length === 0) return;
-    const now = Date.now();
-    const target = hosts.find((h) => now - (analyzedHostsCache.get(h.host) || 0) > 300000);
-    if (!target) return;
+    const latencyCache = (await chrome.storage.local.get('neo_omega_latency_cache')).neo_omega_latency_cache as
+      | Record<string, { success: boolean; latency?: number }>
+      | undefined;
+    const cachedLatency = (id: string) => {
+      const cached = latencyCache?.[id];
+      return cached?.success && typeof cached.latency === 'number' ? cached.latency : Infinity;
+    };
+    fixedCandidates.sort((a, b) => {
+      const aLatency = cachedLatency(a.id);
+      const bLatency = cachedLatency(b.id);
+      return aLatency === bLatency ? 0 : aLatency - bLatency;
+    });
     if (analyzedHostsCache.size > 2000) analyzedHostsCache.clear();
     analyzedHostsCache.set(target.host, now);
     const targetProto = target.protocol === 'http:' || target.protocol === 'http' || protocol === 'http:' || protocol === 'http'
@@ -579,6 +649,8 @@ export default defineBackground(() => {
     const abortController = new AbortController();
     speedProbeRunning = true;
     speedProbeAbort = abortController;
+    // Base PAC generated once for the batch; only the host block differs per candidate.
+    const basePac = generatePacScript(activeProfile, settings.profiles);
     const probeResults: Array<{ id: string; name: string; latency: number | null }> = [];
     try {
       // Sequential per-candidate host-only PAC writes. Parallel batch with
@@ -587,11 +659,13 @@ export default defineBackground(() => {
       // never match and every probe falls through to base routing.
       for (const cand of candidates) {
         if (abortController.signal.aborted) break;
-        await ProxyManager.setRawPac(generateProbePacScript(cand.directive, target.host, activeProfile, settings.profiles));
-        const { promise: settlePromise, resolve: settleResolve } = Promise.withResolvers<void>();
-        setTimeout(settleResolve, 120); // ≥ old single-write settle: chrome.proxy.settings.set resolving doesn't guarantee the network service swapped PACs; stale PAC would misattribute latency to the previous candidate
-        await settlePromise;
-        probeResults.push({ id: cand.id, name: cand.name, latency: await probeFetch(cand, target.host) });
+        const probePac = spliceProbeBlock(basePac, cand.directive, target.host);
+        await ProxyManager.setRawPac(probePac);
+        if (!(await settleProbePac(probePac))) {
+          probeResults.push({ id: cand.id, name: cand.name, latency: null });
+          continue;
+        }
+        probeResults.push({ id: cand.id, name: cand.name, latency: await probeFetch(cand, target.host, path) });
       }
     } finally {
       // A preempting user test / rule-list fallback owns the temp cred slot now.
@@ -611,7 +685,7 @@ export default defineBackground(() => {
       speedProbeRunning = false;
     }
     if (abortController.signal.aborted) return;
-    const valid = probeResults.filter((r): r is { id: string; name: string; latency: number } => typeof r.latency === 'number' && r.latency > 0);
+    const valid = probeResults.filter((r): r is { id: string; name: string; latency: number } => typeof r.latency === 'number' && r.latency >= 10);
     console.log('[NeoOmega] Speed probe for', target.host, 'results:', probeResults);
     if (valid.length === 0) return;
     valid.sort((a, b) => a.latency - b.latency);
@@ -675,11 +749,16 @@ export default defineBackground(() => {
   };
 
 
-  const notifyTabOfError = (tabId: number, url: string, host: string, count: number) => {
+  const notifyTabOfError = (tabId: number, url: string, host: string, count: number, requestType?: string, error?: string) => {
+    if (requestType && !failureAlertTypes[requestType]) return;
+    if (error && benignFailureErrors[error]) return;
     if (tabId <= 0 || !errorTrackingOn || !failureNotificationOn || mutedFailureHosts.has(host) || typeof chrome === 'undefined' || !chrome.tabs?.sendMessage) return;
     // Host already routed through a proxy profile: failure is the proxy's or
     // the site's problem, a "switch to proxy" toast adds nothing.
     if (cachedSettings && resolveRouting(cachedSettings, url, host) === 'proxy') return;
+    const now = Date.now();
+    if (now - (lastToastAt.get(host) || 0) < 600000) return;
+    lastToastAt.set(host, now);
     chrome.tabs.sendMessage(
       tabId,
       {
@@ -696,23 +775,48 @@ export default defineBackground(() => {
   // error arrives first, clearPending + per-host dedup in addTabError prevent
   // double-reporting the same failure.
   const HANG_TIMEOUT_MS = 20000;
+  const HANG_EVICT_MS = 60000;
   const pendingRequests = new Map<
     string,
-    { tabId: number; host: string; url: string; timer?: TimeoutHandle; reported?: boolean }
+    { tabId: number; host: string; url: string; hangAt: number; evictAt?: number; reported?: boolean }
   >();
 
-  const clearPending = (requestId: string) => {
-    const p = pendingRequests.get(requestId);
-    if (p) {
-      clearTimeout(p.timer);
-      pendingRequests.delete(requestId);
+  // One shared 1s sweep instead of a setTimeout per request: default monitoring
+  // tracks every request, so per-request timers allocate N handles per page.
+  let sweepTimer: TimeoutHandle | null = null;
+  const stopSweepIfIdle = () => {
+    if (sweepTimer && pendingRequests.size === 0) {
+      clearInterval(sweepTimer);
+      sweepTimer = null;
     }
+  };
+  const sweepPending = () => {
+    const now = Date.now();
+    for (const [id, p] of pendingRequests) {
+      if (!p.reported && now >= p.hangAt) {
+        console.warn('[NeoOmega] Hang detected:', p.host, p.url);
+        addTabError(p.tabId, p.url, p.host, 'net::ERR_CONNECTION_HANG');
+        // Keep the entry so resolvePending can retract a false-positive hang
+        // when late headers arrive; evict after the retraction window.
+        p.reported = true;
+        p.evictAt = now + HANG_EVICT_MS;
+      }
+      if (p.evictAt !== undefined && now >= p.evictAt) pendingRequests.delete(id);
+    }
+    stopSweepIfIdle();
+  };
+  const ensureSweep = () => {
+    if (!sweepTimer) sweepTimer = setInterval(sweepPending, 1000);
+  };
+
+  const clearPending = (requestId: string) => {
+    pendingRequests.delete(requestId);
+    stopSweepIfIdle();
   };
 
   const resolvePending = (requestId: string) => {
     const p = pendingRequests.get(requestId);
     if (!p) return;
-    clearTimeout(p.timer);
     if (p.reported) {
       const errors = tabErrors.get(p.tabId);
       if (errors) {
@@ -730,39 +834,40 @@ export default defineBackground(() => {
       }
     }
     pendingRequests.delete(requestId);
+    stopSweepIfIdle();
   };
 
-  const addTabError = (tabId: number, url: string, host: string, error: string) => {
+  const addTabError = (tabId: number, url: string, host: string, error: string, requestType?: string) => {
+    // Benign failures (ad-blockers, aborted navs) feed no consumer once toasts exclude them
+    if (benignFailureErrors[error]) return;
     if (tabId <= 0) return;
     const errors = tabErrors.get(tabId) || [];
     if (!errors.some((e) => e.host === host)) {
       errors.push({ url, host, error, timestamp: Date.now() });
       if (errors.length > 50) errors.shift();
       tabErrors.set(tabId, errors);
-      notifyTabOfError(tabId, url, host, errors.length);
+      notifyTabOfError(tabId, url, host, errors.length, requestType, error);
       broadcastTab(tabId);
     }
   };
 
   const onBeforeRequestListener = (details: chrome.webRequest.OnBeforeRequestDetails): undefined => {
     if (details.tabId <= 0 || (!errorTrackingOn && !requestLogOn)) return;
+    if (details.type !== 'main_frame' && details.type !== 'sub_frame') return;
     try {
       const urlObj = new URL(details.url);
+      if (urlObj.protocol !== 'http:' && urlObj.protocol !== 'https:') return;
       const host = urlObj.hostname;
       if (!host) return;
       clearPending(details.requestId);
-      const timer = setTimeout(() => {
-        console.warn('[NeoOmega] Hang detected:', host, details.url);
-        addTabError(details.tabId, details.url, host, 'net::ERR_CONNECTION_HANG');
-        // Keep the entry so resolvePending can retract a false-positive hang
-        // when late headers arrive; evict after the retraction window.
-        const p = pendingRequests.get(details.requestId);
-        if (p) {
-          p.reported = true;
-          p.timer = setTimeout(() => pendingRequests.delete(details.requestId), 60000);
-        }
-      }, HANG_TIMEOUT_MS);
-      pendingRequests.set(details.requestId, { tabId: details.tabId, host, url: details.url, timer, reported: false });
+      pendingRequests.set(details.requestId, {
+        tabId: details.tabId,
+        host,
+        url: details.url,
+        hangAt: Date.now() + HANG_TIMEOUT_MS,
+        reported: false,
+      });
+      ensureSweep();
     } catch {
       // ignore invalid URLs
     }
@@ -779,7 +884,8 @@ export default defineBackground(() => {
     }
     try {
       const urlObj = new URL(details.url);
-      addTabError(details.tabId, details.url, urlObj.hostname, details.error);
+      if (urlObj.protocol !== 'http:' && urlObj.protocol !== 'https:') return;
+      addTabError(details.tabId, details.url, urlObj.hostname, details.error, details.type);
       if (!requestLogOn) return;
       const reqs = tabRequests.get(details.tabId) || [];
       reqs.unshift({
@@ -804,13 +910,20 @@ export default defineBackground(() => {
   // reconnects after SW restart, replacing the old 2s heartbeat poll.
   const portTab = new Map<chrome.runtime.Port, number>();
   const broadcastTimers = new Map<number, TimeoutHandle>();
-  const pushTabData = (port: chrome.runtime.Port, tabId: number) => {
+  // Last-pushed signature per tab: skip re-cloning 80+50 entries when nothing changed.
+  // ponytail: heuristic (length + newest item id/status) misses mid-array edits;
+  // upgrade path = revision counter bumped on every mutation.
+  const lastPushSig = new Map<number, string>();
+  const pushTabData = (port: chrome.runtime.Port, tabId: number, force = false) => {
+    const requests = tabRequests.get(tabId) || [];
+    const errors = tabErrors.get(tabId) || [];
+    const newestReq = requests[0];
+    const newestErr = errors[errors.length - 1];
+    const sig = `${requests.length}:${newestReq?.id}:${newestReq?.statusCode ?? newestReq?.error ?? ''}|${errors.length}:${newestErr?.host}:${newestErr?.error}`;
+    if (!force && lastPushSig.get(tabId) === sig) return;
     try {
-      port.postMessage({
-        type: 'TAB_DATA',
-        requests: tabRequests.get(tabId) || [],
-        errors: tabErrors.get(tabId) || [],
-      });
+      port.postMessage({ type: 'TAB_DATA', requests, errors });
+      lastPushSig.set(tabId, sig);
     } catch {
       // port already dying
     }
@@ -825,7 +938,7 @@ export default defineBackground(() => {
         for (const [port, id] of portTab) {
           if (id === tabId) pushTabData(port, tabId);
         }
-      }, 100)
+      }, 250)
     );
   };
 
@@ -841,9 +954,10 @@ export default defineBackground(() => {
     const wantCompleted = requestLogOn || wantHang; // panel feed + pending cleanup
 
     if (!wantHang && pendingRequests.size > 0) {
-      for (const p of pendingRequests.values()) clearTimeout(p.timer);
       pendingRequests.clear();
+      stopSweepIfIdle();
     }
+    const mainFilter: chrome.webRequest.RequestFilter = { urls: ['<all_urls>'], types: ['main_frame', 'sub_frame'] };
     const toggle = <L>(
       event: {
         addListener: (cb: L, filter: chrome.webRequest.RequestFilter) => void;
@@ -851,17 +965,23 @@ export default defineBackground(() => {
         hasListener: (cb: L) => boolean;
       },
       listener: L,
-      want: boolean
+      want: boolean,
+      filter?: chrome.webRequest.RequestFilter
     ) => {
       const has = event.hasListener(listener);
-      if (want && !has) event.addListener(listener, { urls: ['<all_urls>'] });
-      else if (!want && has) event.removeListener(listener);
+      // Remove-then-add: hasListener can't detect a stale filter from a prior registration
+      if (has) event.removeListener(listener);
+      if (want) event.addListener(listener, filter ?? { urls: ['<all_urls>'] });
     };
 
-    toggle(chrome.webRequest.onCompleted, onCompletedListener, wantCompleted);
+    // Hang entries are main/sub_frame only, so filter onBeforeRequest/
+    // onHeadersReceived always; onErrorOccurred stays unfiltered (failure
+    // toasts need script/xhr/font). onCompleted feeds the request log for all
+    // types when the panel is open; filter only when it's hang-cleanup alone.
+    toggle(chrome.webRequest.onCompleted, onCompletedListener, wantCompleted, requestLogOn ? undefined : mainFilter);
     toggle(chrome.webRequest.onErrorOccurred, onErrorListener, wantError);
-    toggle(chrome.webRequest.onBeforeRequest, onBeforeRequestListener, wantHang);
-    toggle(chrome.webRequest.onHeadersReceived, onHeadersReceivedListener, wantHang);
+    toggle(chrome.webRequest.onBeforeRequest, onBeforeRequestListener, wantHang, mainFilter);
+    toggle(chrome.webRequest.onHeadersReceived, onHeadersReceivedListener, wantHang, mainFilter);
   };
 
   chrome.runtime.onConnect.addListener((port) => {
@@ -872,13 +992,14 @@ export default defineBackground(() => {
     port.onMessage.addListener((msg: { type?: string; tabId?: number }) => {
       if (msg?.type !== 'SUBSCRIBE_TAB' || typeof msg.tabId !== 'number') return;
       portTab.set(port, msg.tabId);
-      pushTabData(port, msg.tabId);
+      pushTabData(port, msg.tabId, true);
     });
     port.onDisconnect.addListener(() => {
       portTab.delete(port);
       if (portTab.size === 0) {
         requestLogOn = false;
         tabRequests.clear();
+        lastPushSig.clear();
         for (const timer of broadcastTimers.values()) clearTimeout(timer);
         broadcastTimers.clear();
         syncWebRequestListeners();
@@ -901,12 +1022,12 @@ export default defineBackground(() => {
   };
   // MV3 cold-start wake: register listeners synchronously before async getSettings
   syncWebRequestListeners();
-  getSettings()
+  startupSettingsPromise
     .then((s) => {
       cachedSettings = s;
       errorTrackingOn = !!s.enableErrorMonitoring;
-      failureNotificationOn = s.enableFailureNotification ?? true;
-      speedRecommendationOn = s.enableSpeedRecommendation ?? true;
+      failureNotificationOn = s.enableFailureNotification ?? false;
+      speedRecommendationOn = s.enableSpeedRecommendation ?? false;
       mutedFailureHosts.clear();
       for (const h of s.mutedFailureHosts ?? []) mutedFailureHosts.add(h);
       applyWebRtcPolicy(s.webRtcMode);
@@ -921,8 +1042,8 @@ export default defineBackground(() => {
     cachedSettings = (change.newValue as AppSettings | undefined) ?? null;
     const oldMonitoring = errorTrackingOn;
     errorTrackingOn = !!(change.newValue as AppSettings | undefined)?.enableErrorMonitoring;
-    failureNotificationOn = (change.newValue as AppSettings | undefined)?.enableFailureNotification ?? true;
-    speedRecommendationOn = (change.newValue as AppSettings | undefined)?.enableSpeedRecommendation ?? true;
+    failureNotificationOn = (change.newValue as AppSettings | undefined)?.enableFailureNotification ?? false;
+    speedRecommendationOn = (change.newValue as AppSettings | undefined)?.enableSpeedRecommendation ?? false;
     mutedFailureHosts.clear();
     for (const h of (change.newValue as AppSettings | undefined)?.mutedFailureHosts ?? []) mutedFailureHosts.add(h);
     const oldRtc = (change.oldValue as AppSettings | undefined)?.webRtcMode ?? 'default';
@@ -952,11 +1073,9 @@ export default defineBackground(() => {
   // Clean up tab error and request cache on tab close or URL navigation
   const purgePendingForTab = (tabId: number) => {
     for (const [id, p] of pendingRequests) {
-      if (p.tabId === tabId) {
-        clearTimeout(p.timer);
-        pendingRequests.delete(id);
-      }
+      if (p.tabId === tabId) pendingRequests.delete(id);
     }
+    stopSweepIfIdle();
   };
   chrome.tabs?.onRemoved.addListener((tabId) => {
     tabErrors.delete(tabId);
@@ -981,7 +1100,10 @@ export default defineBackground(() => {
         : message.host
           ? [{ host: message.host, duration: message.duration ?? 0, protocol: message.protocol }]
           : [];
-      void analyzeSlowHosts(hosts, _sender.tab?.id, proto);
+      const path = typeof message.path === 'string' && message.path.startsWith('/')
+        ? (message.path.split(/[?#]/, 1)[0] || '/').slice(0, 200)
+        : '/';
+      void analyzeSlowHosts(hosts, _sender.tab?.id, proto, path);
       return false;
     }
     if (message.type === 'GET_TAB_ERRORS') {

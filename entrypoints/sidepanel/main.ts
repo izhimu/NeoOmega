@@ -8,6 +8,7 @@ import { setLocale, resolveLocale } from '../../src/core/i18n';
 
 try {
   const settings = await getSettings();
+  globalThis.__neoOmegaInitialSettings = settings;
   applyTheme(settings?.theme);
   setLocale(resolveLocale(settings?.language));
 } catch {}

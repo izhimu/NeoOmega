@@ -36,7 +36,7 @@ const data = computed<LatencyData | null>(() => {
 
 const isSuccess = computed(() => data.value?.success !== false);
 const hasSpeed = computed(() => data.value?.speedMbps !== undefined);
-const isFast = computed(() => hasSpeed.value || (data.value?.latency !== undefined && data.value.latency < 300));
+const isFast = computed(() => hasSpeed.value || (data.value?.latency !== undefined && data.value.latency < 250));
 
 const badgeTitle = computed(() => {
   if (!data.value) return '';

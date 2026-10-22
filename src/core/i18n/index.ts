@@ -582,6 +582,7 @@ export const messages = {
 export type MessageSchema = typeof messages.en;
 
 const currentLocaleRef = ref<SupportedLocale>('zh_CN');
+const translationCache = new Map<SupportedLocale, Map<string, string>>();
 
 export function resolveLocale(preference?: string): SupportedLocale {
   if (preference === 'zh_CN' || preference === 'en') {
@@ -596,6 +597,7 @@ export function resolveLocale(preference?: string): SupportedLocale {
 }
 
 export function setLocale(locale: SupportedLocale) {
+  translationCache.clear();
   currentLocaleRef.value = locale;
 }
 
@@ -608,6 +610,14 @@ export function getLocale(): SupportedLocale {
  */
 export function t(path: string, fallback?: string): string {
   const loc = currentLocaleRef.value;
+  let localeCache = translationCache.get(loc);
+  if (!localeCache) {
+    localeCache = new Map<string, string>();
+    translationCache.set(loc, localeCache);
+  }
+  const cached = localeCache.get(path);
+  if (cached !== undefined) return cached;
+
   const dict = messages[loc] || messages.en;
   const parts = path.split('.');
   let current: unknown = dict;
@@ -621,13 +631,24 @@ export function t(path: string, fallback?: string): string {
         if (enCurrent && typeof enCurrent === 'object' && ep in enCurrent) {
           enCurrent = (enCurrent as Record<string, unknown>)[ep];
         } else {
+          localeCache.set(path, fallback ?? path);
           return fallback ?? path;
         }
       }
-      return typeof enCurrent === 'string' ? enCurrent : (fallback ?? path);
+      if (typeof enCurrent === 'string') {
+        localeCache.set(path, enCurrent);
+        return enCurrent;
+      }
+      localeCache.set(path, fallback ?? path);
+      return fallback ?? path;
     }
   }
-  return typeof current === 'string' ? current : (fallback ?? path);
+  if (typeof current === 'string') {
+    localeCache.set(path, current);
+    return current;
+  }
+  localeCache.set(path, fallback ?? path);
+  return fallback ?? path;
 }
 
 /**

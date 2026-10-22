@@ -23,16 +23,21 @@ const isLast = computed(() => step.value === steps.length - 1);
 
 // Spotlight: track the target element's viewport rect; null → centered card
 const rect = ref<DOMRect | null>(null);
+let rectFrame: number | null = null;
 const updateRect = () => {
-  rect.value = null;
-  const target = current.value.target;
-  if (!props.open || !target) return;
-  const el = document.querySelector(`[data-tour="${target}"]`);
-  if (!el) return;
-  const r = el.getBoundingClientRect();
-  // treat offscreen (e.g. hidden mobile drawer) as no target
-  if (r.width === 0 || r.right < 0 || r.bottom < 0 || r.left > window.innerWidth || r.top > window.innerHeight) return;
-  rect.value = r;
+  if (rectFrame !== null) return;
+  rectFrame = requestAnimationFrame(() => {
+    rectFrame = null;
+    rect.value = null;
+    const target = current.value.target;
+    if (!props.open || !target) return;
+    const el = document.querySelector(`[data-tour="${target}"]`);
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    // treat offscreen (e.g. hidden mobile drawer) as no target
+    if (r.width === 0 || r.right < 0 || r.bottom < 0 || r.left > window.innerWidth || r.top > window.innerHeight) return;
+    rect.value = r;
+  });
 };
 
 const ringStyle = computed(() => {
@@ -93,6 +98,7 @@ watch(step, async () => {
 });
 
 onUnmounted(() => {
+  if (rectFrame !== null) cancelAnimationFrame(rectFrame);
   window.removeEventListener('resize', updateRect);
   window.removeEventListener('scroll', updateRect, true);
   window.removeEventListener('keydown', onKeydown);

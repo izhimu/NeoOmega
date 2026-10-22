@@ -6,6 +6,24 @@ import type { RuleCondition } from '../types';
 import type { SwitchProfile } from '../types';
 import { parseRuleListCache } from '../parsers/autoproxy';
 
+// Compiled-regex cache: matchCondition ran `new RegExp` on every evaluation.
+// ponytail: unbounded-keyed LRU-ish cap at 2000; on overflow the map clears
+// wholesale — a full LRU (delete+set churn) buys little at this size.
+const regexCache = new Map<string, RegExp | null>();
+function getCachedRegExp(pattern: string): RegExp | null {
+  let re = regexCache.get(pattern);
+  if (re === undefined) {
+    try {
+      re = new RegExp(pattern, 'i');
+    } catch {
+      re = null;
+    }
+    if (regexCache.size >= 2000) regexCache.clear();
+    regexCache.set(pattern, re);
+  }
+  return re;
+}
+
 /**
  * Convert a wildcard pattern (*, ?) to a regular expression string
  */
@@ -85,29 +103,19 @@ export function matchCondition(condition: RuleCondition, url: string, host: stri
       return false;
 
     case 'HostWildcardCondition': {
-      const regexStr = hostWildcardToRegExpString(pattern);
-      return new RegExp(regexStr, 'i').test(host);
+      return (getCachedRegExp(hostWildcardToRegExpString(pattern))?.test(host)) ?? false;
     }
 
     case 'HostRegexCondition': {
-      try {
-        return new RegExp(pattern, 'i').test(host);
-      } catch {
-        return false;
-      }
+      return (getCachedRegExp(pattern)?.test(host)) ?? false;
     }
 
     case 'UrlWildcardCondition': {
-      const regexStr = `^${wildcardToRegExpString(pattern)}$`;
-      return new RegExp(regexStr, 'i').test(url);
+      return (getCachedRegExp(`^${wildcardToRegExpString(pattern)}$`)?.test(url)) ?? false;
     }
 
     case 'UrlRegexCondition': {
-      try {
-        return new RegExp(pattern, 'i').test(url);
-      } catch {
-        return false;
-      }
+      return (getCachedRegExp(pattern)?.test(url)) ?? false;
     }
 
     case 'KeywordCondition': {

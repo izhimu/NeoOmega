@@ -98,7 +98,9 @@ const connectPort = () => {
 };
 
 const refreshState = async () => {
-  settings.value = await getSettings();
+  const stashed = globalThis.__neoOmegaInitialSettings;
+  delete globalThis.__neoOmegaInitialSettings;
+  settings.value = stashed ?? (await getSettings());
   applyTheme(settings.value?.theme);
   setLocale(resolveLocale(settings.value?.language));
   document.title = `${t('sidepanel.title')} - ${t('sidepanel.subtitle')}`;
@@ -168,7 +170,7 @@ const addQuickRule = (host: string) => {
     (res) => {
       const err = chrome.runtime.lastError;
       if (!err && res && res.success) {
-        toast.success(`${t('popup.ruleAdded')}: *.${host}`);
+        toast.success(`${t('popup.ruleAdded')}: ${host}`);
         // TAB_DATA push refreshes the lists
       } else {
         toast.error(res?.error || err?.message || t('popup.addRuleFailed'));
